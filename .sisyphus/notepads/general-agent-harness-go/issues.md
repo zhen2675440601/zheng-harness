@@ -10,3 +10,4 @@
 - The interrupt-status fix for Task 9 still cannot be execution-verified in this environment because `go` and `gopls` remain unavailable; confidence is based on source inspection and the narrowed write-path change only.
 - The latest Task 9 terminal-status writeback change is still unverified by execution here because `go test ./cmd/agent`, `go build ./cmd/agent`, and Go diagnostics remain blocked by missing `go`/`gopls`.
 - The Task 9 TaskID-preservation fix is also only source-verified in-session because `go` and `gopls` are still unavailable for `go test ./cmd/agent`, `go build ./cmd/agent`, and diagnostics.
+- Verification environment issue for Task 11: `gopls` is not installed, so `lsp_diagnostics` could not run for changed markdown files/workspace; `go test ./...` also could not run because `go` is not installed in the current environment.

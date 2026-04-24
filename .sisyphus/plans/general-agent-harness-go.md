@@ -448,7 +448,7 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
 
   **Commit**: YES | Message: `feat(cli): add run resume inspect commands` | Files: [`cmd/agent/**`, `*_test.go`]
 
-- [ ] 10. Create benchmark tasks, replay fixtures, and reliability regression suite
+- [x] 10. Create benchmark tasks, replay fixtures, and reliability regression suite
 
   **What to do**: Define a small but representative benchmark pack for coding-agent tasks, create replay fixtures from trace/session outputs, and add regression tests that guard against infinite loops, false completion, broken resume, and unsafe tool usage.
   **Must NOT do**: Do not chase large-scale benchmarking infrastructure or external leaderboard integration.
