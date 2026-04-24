@@ -1,0 +1,7 @@
+- Local environment is missing the `go` binary and `gopls`, so `go test ./...` and LSP diagnostics could not be executed in this session despite the skeleton being created.
+- Verification for Task 2 remains host-blocked for the same reason: `go test ./... -run TestRuntimeWithFakes`, `go test ./internal/domain`, and Go LSP diagnostics cannot run until `go` and `gopls` are installed.
+- Task 5 local verification is additionally blocked by a missing `make` binary, so neither `make test` nor the underlying Go checks can be executed on this host.
+- Task 6 targeted config/provider tests and diagnostics are blocked by the same missing `go` and `gopls` tooling, so validation is limited to file creation and source inspection in-session.
+- Task 3 runtime-loop verification is likewise blocked by missing `go` and `gopls`, so the new multi-step tests could not be executed in-session.
+- Task 4 tool-registry verification is blocked by the same missing `go` and `gopls` tooling, so allowed/forbidden execution tests could not run in-session.
+- Task 7 verifier tests and diagnostics are blocked by the same missing `go` and `gopls` tooling, so evidence/policy behavior could not be compiled or executed in-session.

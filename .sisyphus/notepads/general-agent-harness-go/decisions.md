@@ -1,0 +1,7 @@
+- Declared `internal/domain` as the inward-facing core and documented a guardrail forbidding imports from infrastructure/interface packages such as `internal/store`, `internal/tools`, `internal/runtime`, and `cmd/agent`.
+- Kept Task 2 contracts fully typed with string/time-based fields and a dedicated domain guardrail test to block provider SDK imports, `json.RawMessage`, and `map[string]any` from the domain package.
+- Chose a lightweight single-job CI workflow that runs formatting, vet, standard tests, race tests, and coverage on pushes to `main`/`master` and on pull requests, while explicitly avoiding deployment or release automation.
+- Chose a narrow provider-boundary contract (`Name`, `Model`, `Generate`) plus a minimal `ProviderConfig` selector interface so `internal/config` can choose adapters without exposing SDK-specific types to domain/runtime.
+- Standardized runtime terminal outcomes directly in `domain.SessionStatus` (`success`, `verification_failed`, `budget_exceeded`, `fatal_error`, `interrupted`) so tests and later subsystems can reason about one canonical session lifecycle.
+- Chose a minimal built-in toolset (`list_dir`, `read_file`, `write_file`, `grep_search`, `exec_command`) with explicit safety levels and a single executor implementing `domain.ToolExecutor`, avoiding any plugin or network expansion.
+- Added a minimal verification taxonomy (`verification_success`, `verification_failed`, `insufficient_evidence`, `contradiction`) and bounded failure budget in policy so the runtime can stop re-verifying instead of looping indefinitely.

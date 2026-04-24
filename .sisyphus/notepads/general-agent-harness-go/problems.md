@@ -1,0 +1,7 @@
+- Verification remains partially blocked until a Go toolchain is installed on the host; once available, rerun `go test ./...` and Go LSP diagnostics to confirm the skeleton compiles cleanly.
+- Runtime/test compilation for Task 2 is still unconfirmed in-session because the environment lacks the Go toolchain and `gopls`; rerun the targeted runtime/domain tests after installing them.
+- Task 5 verification cannot be completed in-session until both `go` and `make` are available locally; CI syntax was written but not exercised on-host.
+- Task 6 compile/test confirmation is pending until the host can run `go test ./... -run TestValidConfigAndProviderBoundary` and `go test ./... -run TestInvalidConfigFailsFast` with a working Go toolchain.
+- Task 3 compile/test confirmation remains pending until the host can run the runtime test suite (at minimum `go test ./... -run TestRuntime`) with a working Go toolchain.
+- Task 4 compile/test confirmation remains pending until the host can run `go test ./... -run TestAllowedToolExecution` and `go test ./... -run TestForbiddenToolExecution` with a working Go toolchain.
+- Task 7 compile/test confirmation remains pending until the host can run `go test ./... -run TestVerifierAcceptsProvenSuccess` and `go test ./... -run TestVerifierRejectsFalseSuccess` with a working Go toolchain.

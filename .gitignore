@@ -1,0 +1,29 @@
+# Dependencies
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+/bin/
+/dist/
+*.exe
+
+# Test coverage
+*.out
+coverage.txt
+
+# Temp files
+*.tmp
+*.log
+
+# Sisyphus state (local only)
+.sisyphus/boulder.json
+! .sisyphus/plans/
