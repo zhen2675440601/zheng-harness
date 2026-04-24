@@ -1,10 +1,10 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
 )
 
 func main() {
-	_, _ = fmt.Fprintln(os.Stdout, "zheng-agent")
+	os.Exit(runCLI(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }

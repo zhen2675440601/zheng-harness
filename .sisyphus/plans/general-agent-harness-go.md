@@ -373,7 +373,7 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
 
   **Commit**: YES | Message: `feat(verify): add evidence-based self-correction` | Files: [`internal/verify/**`, `internal/runtime/**`, `*_test.go`]
 
-- [ ] 8. Implement SQLite-backed session persistence and constrained memory
+- [x] 8. Implement SQLite-backed session persistence and constrained memory
 
   **What to do**: Add SQLite repositories for `sessions`, `events/steps`, `artifacts`, and `memory_entries`. Implement memory scopes (`session`, `project`, `global`) and memory types (`preference`, `fact`, `summary`) with provenance, confidence, timestamps, and controlled write/read rules.
   **Must NOT do**: Do not add vector search, autonomous memory writing from every observation, or opaque serialized blobs with no provenance.

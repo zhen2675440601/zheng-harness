@@ -5,3 +5,8 @@
 - Task 3 runtime-loop verification is likewise blocked by missing `go` and `gopls`, so the new multi-step tests could not be executed in-session.
 - Task 4 tool-registry verification is blocked by the same missing `go` and `gopls` tooling, so allowed/forbidden execution tests could not run in-session.
 - Task 7 verifier tests and diagnostics are blocked by the same missing `go` and `gopls` tooling, so evidence/policy behavior could not be compiled or executed in-session.
+- Task 9 CLI verification is host-blocked the same way: `go test ./cmd/agent`, `go test ./...`, `go build ./cmd/agent`, and Go LSP diagnostics could not run because `go` and `gopls` are not installed in this environment.
+- Task 9 alias-store regression could only be checked by source inspection in-session because the host still lacks `go` and `gopls`; targeted `go test ./cmd/agent` and `go build ./cmd/agent` remain blocked here.
+- The interrupt-status fix for Task 9 still cannot be execution-verified in this environment because `go` and `gopls` remain unavailable; confidence is based on source inspection and the narrowed write-path change only.
+- The latest Task 9 terminal-status writeback change is still unverified by execution here because `go test ./cmd/agent`, `go build ./cmd/agent`, and Go diagnostics remain blocked by missing `go`/`gopls`.
+- The Task 9 TaskID-preservation fix is also only source-verified in-session because `go` and `gopls` are still unavailable for `go test ./cmd/agent`, `go build ./cmd/agent`, and diagnostics.
