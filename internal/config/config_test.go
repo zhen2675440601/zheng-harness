@@ -51,23 +51,42 @@ func TestValidConfigAndProviderBoundary(t *testing.T) {
 }
 
 func TestInvalidConfigFailsFast(t *testing.T) {
-	t.Setenv("ZHENG_MODEL", "")
-	t.Setenv("ZHENG_PROVIDER", "invalid")
-	t.Setenv("ZHENG_MAX_STEPS", "0")
+	// Scenario 1: invalid provider only (default max steps OK)
+	t.Run("invalid provider", func(t *testing.T) {
+		t.Setenv("ZHENG_PROVIDER", "invalid")
+		t.Setenv("ZHENG_MODEL", "")
+		_, err := config.Load(nil)
+		if err == nil {
+			t.Fatal("expected config load to fail with invalid provider")
+		}
+		if !strings.Contains(err.Error(), "unsupported provider") {
+			t.Fatalf("error = %v, want unsupported provider error", err)
+		}
+	})
 
-	_, err := config.Load(nil)
-	if err == nil {
-		t.Fatal("expected config load to fail")
-	}
-	if !strings.Contains(err.Error(), "unsupported provider") {
-		t.Fatalf("error = %v, want provider validation error", err)
-	}
+	// Scenario 2: max steps zero via flags
+	t.Run("zero max steps via flags", func(t *testing.T) {
+		t.Setenv("ZHENG_PROVIDER", "")
+		t.Setenv("ZHENG_MODEL", "")
+		_, err := config.Load([]string{"-model", "gpt-4.1", "-provider", config.ProviderOpenAI, "-max-steps", "0"})
+		if err == nil {
+			t.Fatal("expected flag override validation to fail")
+		}
+		if !strings.Contains(err.Error(), "max steps") {
+			t.Fatalf("error = %v, want max steps validation error", err)
+		}
+	})
 
-	_, err = config.Load([]string{"-model", "gpt-4.1", "-provider", config.ProviderOpenAI, "-max-steps", "0"})
-	if err == nil {
-		t.Fatal("expected flag override validation to fail")
-	}
-	if !strings.Contains(err.Error(), "max steps") {
-		t.Fatalf("error = %v, want max steps validation error", err)
-	}
+	// Scenario 3: empty model
+	t.Run("empty model", func(t *testing.T) {
+		t.Setenv("ZHENG_PROVIDER", "")
+		t.Setenv("ZHENG_MODEL", "model-a")
+		_, err := config.Load([]string{"-model", "", "-provider", config.ProviderOpenAI})
+		if err == nil {
+			t.Fatal("expected config load to fail with empty model")
+		}
+		if !strings.Contains(err.Error(), "model must not be empty") {
+			t.Fatalf("error = %v, want model validation error", err)
+		}
+	})
 }
