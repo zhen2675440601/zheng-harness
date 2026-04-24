@@ -410,7 +410,7 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
 
   **Commit**: YES | Message: `feat(store): add sqlite session and memory persistence` | Files: [`internal/store/**`, `internal/memory/**`, schema files, `*_test.go`]
 
-- [ ] 9. Add CLI commands for run, resume, inspect, and interrupt-safe persistence
+- [x] 9. Add CLI commands for run, resume, inspect, and interrupt-safe persistence
 
   **What to do**: Implement the CLI contract for `run`, `resume`, and `inspect`, including clear task input, machine-readable and human-readable output modes, interrupt handling (`Ctrl+C` / signal capture), and persistence before shutdown when safe.
   **Must NOT do**: Do not add web server modes, chat UI, or channel integrations.

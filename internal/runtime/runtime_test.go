@@ -360,19 +360,35 @@ func (f *fakeModel) Observe(_ context.Context, _ domain.Task, _ domain.Session, 
 
 type fakeToolExecutor struct {
 	results      []domain.ToolResult
+	errs         []error
+	executeFn    func(context.Context, domain.ToolCall, int) (domain.ToolResult, error)
 	executeCalls int
 }
 
-func (f *fakeToolExecutor) Execute(_ context.Context, call domain.ToolCall) (domain.ToolResult, error) {
+func (f *fakeToolExecutor) Execute(ctx context.Context, call domain.ToolCall) (domain.ToolResult, error) {
+	if f.executeFn != nil {
+		callIndex := f.executeCalls
+		f.executeCalls++
+		result, err := f.executeFn(ctx, call, callIndex)
+		if result.ToolName == "" {
+			result.ToolName = call.Name
+		}
+		return result, err
+	}
+
 	var result domain.ToolResult
+	var err error
 	if f.executeCalls < len(f.results) {
 		result = f.results[f.executeCalls]
+	}
+	if f.executeCalls < len(f.errs) {
+		err = f.errs[f.executeCalls]
 	}
 	f.executeCalls++
 	if result.ToolName == "" {
 		result.ToolName = call.Name
 	}
-	return result, nil
+	return result, err
 }
 
 type fakeMemoryStore struct {

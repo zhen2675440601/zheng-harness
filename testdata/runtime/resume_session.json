@@ -1,0 +1,54 @@
+{
+  "name": "resume_path_replay",
+  "clock": "2026-04-25T09:30:00Z",
+  "task": {
+    "id": "fixture-resume-task",
+    "description": "persist and restore a session",
+    "goal": "recover deterministic session state"
+  },
+  "engine": {
+    "max_steps": 2,
+    "max_retries": 1,
+    "session_timeout_ms": 60000
+  },
+  "store": {
+    "kind": "sqlite"
+  },
+  "tool": {
+    "kind": "fake"
+  },
+  "plans": [
+    {
+      "id": "fixture-resume-plan-1",
+      "summary": "read runtime implementation and persist state"
+    }
+  ],
+  "actions": [
+    {
+      "type": "tool_call",
+      "summary": "read runtime implementation",
+      "tool_name": "read_file",
+      "tool_input": "internal/runtime/runtime.go",
+      "tool_timeout_ms": 2000
+    }
+  ],
+  "tool_results": [
+    {
+      "tool_name": "read_file",
+      "output": "runtime loop persists deterministic state",
+      "duration_ms": 15
+    }
+  ],
+  "observations": [
+    {
+      "summary": "runtime session persisted for replay",
+      "final_response": "resume should reconstruct this exact step"
+    }
+  ],
+  "verifications": [
+    {
+      "passed": true,
+      "reason": "persistence replay accepted"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "name": "success_path_replay",
+  "clock": "2026-04-25T09:00:00Z",
+  "task": {
+    "id": "fixture-success-task",
+    "description": "inspect repository",
+    "goal": "produce verified completion"
+  },
+  "engine": {
+    "max_steps": 2,
+    "max_retries": 1,
+    "session_timeout_ms": 60000
+  },
+  "store": {
+    "kind": "memory"
+  },
+  "tool": {
+    "kind": "fake"
+  },
+  "plans": [
+    {
+      "id": "fixture-success-plan-1",
+      "summary": "read README and report inspectable evidence"
+    }
+  ],
+  "actions": [
+    {
+      "type": "tool_call",
+      "summary": "read repository readme",
+      "tool_name": "read_file",
+      "tool_input": "README.md",
+      "tool_timeout_ms": 2000
+    }
+  ],
+  "tool_results": [
+    {
+      "tool_name": "read_file",
+      "output": "go test ./... PASS\nbuild ok\nlint ok",
+      "duration_ms": 10
+    }
+  ],
+  "observations": [
+    {
+      "summary": "repository inspected with deterministic evidence",
+      "final_response": "done with evidence attached"
+    }
+  ],
+  "verifications": [
+    {
+      "passed": true,
+      "reason": "deterministic fake accepted output"
+    }
+  ]
+}

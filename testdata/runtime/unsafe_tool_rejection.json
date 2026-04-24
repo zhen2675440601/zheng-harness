@@ -1,0 +1,67 @@
+{
+  "name": "unsafe_tool_rejection_replay",
+  "clock": "2026-04-25T09:45:00Z",
+  "task": {
+    "id": "fixture-unsafe-task",
+    "description": "attempt a forbidden command",
+    "goal": "ensure safety policy blocks unsafe tools"
+  },
+  "engine": {
+    "max_steps": 3,
+    "max_retries": 1,
+    "session_timeout_ms": 60000
+  },
+  "store": {
+    "kind": "memory"
+  },
+  "tool": {
+    "kind": "real_executor"
+  },
+  "plans": [
+    {
+      "id": "fixture-unsafe-plan-1",
+      "summary": "try an allowlist violation"
+    },
+    {
+      "id": "fixture-unsafe-plan-2",
+      "summary": "retry still using a forbidden command"
+    }
+  ],
+  "actions": [
+    {
+      "type": "tool_call",
+      "summary": "attempt forbidden shell command",
+      "tool_name": "exec_command",
+      "tool_input": "powershell -NoProfile Get-Date",
+      "tool_timeout_ms": 2000
+    },
+    {
+      "type": "tool_call",
+      "summary": "repeat forbidden shell command",
+      "tool_name": "exec_command",
+      "tool_input": "powershell -NoProfile Get-Date",
+      "tool_timeout_ms": 2000
+    }
+  ],
+  "tool_results": [],
+  "observations": [
+    {
+      "summary": "unsafe command attempt captured",
+      "final_response": "done"
+    },
+    {
+      "summary": "unsafe command attempt captured again",
+      "final_response": "done again"
+    }
+  ],
+  "verifications": [
+    {
+      "passed": false,
+      "reason": "unsafe tool usage rejected by fake verifier"
+    },
+    {
+      "passed": false,
+      "reason": "unsafe tool usage rejected by fake verifier again"
+    }
+  ]
+}
