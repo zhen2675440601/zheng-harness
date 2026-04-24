@@ -31,8 +31,52 @@ func (s *SQLiteMemoryStore) Close() error {
 	return s.db.Close()
 }
 
-func (s *SQLiteMemoryStore) Remember(_ context.Context, _ string, _ domain.Observation) error {
+func (s *SQLiteMemoryStore) Remember(ctx context.Context, sessionID string, observation domain.Observation) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite memory store is not initialized")
+	}
+	if strings.TrimSpace(observation.Summary) == "" && observation.ToolResult == nil {
+		return nil
+	}
+
+	value := observation.Summary
+	if observation.ToolResult != nil && observation.ToolResult.Output != "" {
+		value = observation.ToolResult.Output
+	}
+	source := "runtime"
+	if observation.ToolResult != nil && observation.ToolResult.ToolName != "" {
+		source = "tool:" + observation.ToolResult.ToolName
+	}
+
+	now := time.Now().UTC()
+	entry := memorypolicy.Entry{
+		SessionID:  sessionID,
+		Scope:      memorypolicy.ScopeSession,
+		Type:       memorypolicy.TypeSummary,
+		Key:        "observation-" + formatTimestamp(now),
+		Value:      value,
+		Source:     source,
+		Confidence: 50,
+		Provenance: "runtime.Remember",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := memorypolicy.ValidateEntry(entry); err != nil {
+		return fmt.Errorf("validate runtime observation: %w", err)
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO memory_entries (session_id, scope, type, key, value, source, confidence, provenance, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, nullableSessionID(entry.SessionID), string(entry.Scope), string(entry.Type), entry.Key, entry.Value, entry.Source, entry.Confidence, nullableString(entry.Provenance), entry.CreatedAt.UTC(), entry.UpdatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("persist runtime observation: %w", err)
+	}
 	return nil
+}
+
+func formatTimestamp(t time.Time) string {
+	return t.Format("20060102150405")
 }
 
 func (s *SQLiteMemoryStore) Write(ctx context.Context, entry memorypolicy.Entry) (memorypolicy.Entry, error) {

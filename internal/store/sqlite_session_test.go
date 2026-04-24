@@ -157,7 +157,10 @@ func TestSessionPersistenceAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recall() after Remember error = %v", err)
 	}
-	if len(implicit) != 1 {
-		t.Fatalf("implicit Remember() should not create entries; got %d", len(implicit))
+	if len(implicit) != 2 {
+		t.Fatalf("implicit Remember() should create a persisted entry; got %d", len(implicit))
+	}
+	if implicit[0].Value != "implicit observation only" && implicit[1].Value != "implicit observation only" {
+		t.Fatalf("implicit Remember() did not persist observation value; entries = %#v", implicit)
 	}
 }

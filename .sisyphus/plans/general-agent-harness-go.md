@@ -485,7 +485,7 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
 
   **Commit**: YES | Message: `test(runtime): add replay benchmarks and reliability regressions` | Files: [`testdata/**`, replay fixtures, `*_test.go`]
 
-- [ ] 11. Document operating model, ADRs, and contributor workflow for v1
+- [x] 11. Document operating model, ADRs, and contributor workflow for v1
 
   **What to do**: Write implementation-facing docs covering system boundaries, CLI usage, architecture decision records (single-process, single-agent, SQLite memory, no plugin system, no vector DB), testing workflow, and how to extend tools in v1 without introducing a plugin architecture.
   **Must NOT do**: Do not write speculative v2 platform docs or marketing-oriented claims.
