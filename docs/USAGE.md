@@ -49,6 +49,7 @@ go run ./cmd/agent run --task "inspect repository and propose next step"
 ```bash
 go run ./cmd/agent run \
   --task "inspect repository and propose next step" \
+  --config ./zheng.json \
   --db ./agent.db \
   --max-steps 8 \
   --json
@@ -57,6 +58,7 @@ go run ./cmd/agent run \
 参数说明：
 
 - `--task`：必填，任务描述
+- `--config`：可选，JSON 配置文件路径；默认按 `./zheng.json`、`~/.zheng/config.json` 顺序查找
 - `--db`：SQLite 文件路径，默认 `./agent.db`
 - `--max-steps`：最大步数，必须大于 0
 - `--json`：输出机器可读 JSON
@@ -151,6 +153,46 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 
 ## 环境变量配置
 
+运行时配置支持以下优先级：**CLI flags > 配置文件 > 环境变量 > 默认值**。
+
+## 配置文件
+
+推荐将 LLM provider 的敏感配置放入 JSON 配置文件，而不是直接写在命令行参数中。
+
+默认查找路径：
+
+1. 当前工作目录下的 `./zheng.json`
+2. 用户目录下的 `~/.zheng/config.json`
+
+也可以通过 `--config <path>` 显式指定。
+
+示例：
+
+```json
+{
+  "provider": "dashscope",
+  "model": "qwen3.6-plus",
+  "api_key": "sk-sp-xxx",
+  "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1",
+  "max_steps": 8,
+  "step_timeout": "30s",
+  "memory_limit_mb": 256,
+  "verify_mode": "standard"
+}
+```
+
+仓库示例文件：[`../zheng.example.json`](../zheng.example.json)
+
+运行示例：
+
+```bash
+go run ./cmd/agent run \
+  --task "inspect repository and propose next step" \
+  --config ./zheng.json
+```
+
+如果同时提供配置文件和命令行参数，命令行参数会覆盖配置文件中的同名项。
+
 运行时配置可通过环境变量覆盖：
 
 - `ZHENG_MODEL`
@@ -159,6 +201,8 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 - `ZHENG_STEP_TIMEOUT`
 - `ZHENG_MEMORY_LIMIT_MB`
 - `ZHENG_VERIFY_MODE`
+- `ZHENG_API_KEY`
+- `ZHENG_BASE_URL`
 
 含义如下：
 
@@ -168,6 +212,8 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 - `ZHENG_STEP_TIMEOUT`：单步超时，例如 `30s`
 - `ZHENG_MEMORY_LIMIT_MB`：内存预算（MB）
 - `ZHENG_VERIFY_MODE`：验证模式，支持 `off`、`standard`、`strict`
+- `ZHENG_API_KEY`：LLM provider API key
+- `ZHENG_BASE_URL`：LLM provider API base URL
 
 示例：
 
@@ -178,6 +224,8 @@ export ZHENG_MAX_STEPS=8
 export ZHENG_STEP_TIMEOUT=30s
 export ZHENG_MEMORY_LIMIT_MB=256
 export ZHENG_VERIFY_MODE=standard
+export ZHENG_API_KEY=sk-sp-xxx
+export ZHENG_BASE_URL=https://coding.dashscope.aliyuncs.com/apps/anthropic/v1
 ```
 
 ## SQLite 数据位置

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"zheng-harness/internal/config"
 	"zheng-harness/internal/domain"
 	"zheng-harness/internal/store"
 )
@@ -208,5 +209,76 @@ func TestRunCommandSupportsMaxStepsFlag(t *testing.T) {
 	}
 	if payload.Status != domain.SessionStatusSuccess {
 		t.Fatalf("status = %q, want success", payload.Status)
+	}
+}
+
+func TestRunCLIUsesSelectedProviderFromConfig(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "dashscope",
+		"providers": {
+			"dashscope": {
+				"type": "openai",
+				"model": "qwen3.6-plus"
+			},
+			"openai": {
+				"type": "openai",
+				"model": "gpt-4.1-mini"
+			}
+		},
+		"runtime": {
+			"max_steps": 4,
+			"step_timeout": "30s",
+			"memory_limit_mb": 256,
+			"verify_mode": "standard"
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"run", "--task", "inspect repository", "--config", configPath, "--provider", "openai", "--json"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0, stderr=%s", exitCode, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunCLIRejectsMissingSelectedProvider(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "dashscope",
+		"providers": {
+			"dashscope": {
+				"type": "dashscope",
+				"model": "qwen3.6-plus",
+				"api_key": "dash-key"
+			}
+		},
+		"runtime": {
+			"max_steps": 4,
+			"step_timeout": "30s",
+			"memory_limit_mb": 256,
+			"verify_mode": "standard"
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"run", "--task", "inspect repository", "--config", configPath, "--provider", config.ProviderOpenAI, "--json"}, &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stderr.String(), `provider "openai" not found`) {
+		t.Fatalf("stderr = %q, want provider not found", stderr.String())
 	}
 }

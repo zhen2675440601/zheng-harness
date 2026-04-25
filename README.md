@@ -76,10 +76,39 @@ go run ./cmd/agent run --task "inspect repository and propose next step"
 ```bash
 go run ./cmd/agent run \
   --task "inspect repository and propose next step" \
+  --config ./zheng.json \
   --db ./agent.db \
   --max-steps 8 \
   --json
 ```
+
+### 使用配置文件管理 Provider 凭据
+
+推荐将 API key、base URL 等敏感配置写入 JSON 配置文件，而不是直接放在命令行参数中。
+
+`zheng-agent` 默认会按以下顺序查找配置文件：
+
+1. `./zheng.json`
+2. `~/.zheng/config.json`
+
+也支持通过 `--config <path>` 显式指定：
+
+```json
+{
+  "provider": "dashscope",
+  "model": "qwen3.6-plus",
+  "api_key": "sk-sp-xxx",
+  "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1",
+  "max_steps": 8,
+  "step_timeout": "30s",
+  "memory_limit_mb": 256,
+  "verify_mode": "standard"
+}
+```
+
+仓库提供了可复制修改的示例文件：[`zheng.example.json`](zheng.example.json)。
+
+配置优先级为：**CLI flags > 配置文件 > 环境变量 > 默认值**。
 
 ### 恢复会话
 

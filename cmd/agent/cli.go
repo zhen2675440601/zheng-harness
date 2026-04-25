@@ -13,7 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"zheng-harness/internal/config"
 	"zheng-harness/internal/domain"
+	"zheng-harness/internal/llm"
 	"zheng-harness/internal/runtime"
 	"zheng-harness/internal/store"
 )
@@ -23,6 +25,7 @@ const defaultDBPath = "./agent.db"
 type cliApp struct {
 	stdout       io.Writer
 	stderr       io.Writer
+	cfg          config.Config
 	newSession   func(string) (*store.SQLiteSessionStore, error)
 	newMemory    func(string) (*store.SQLiteMemoryStore, error)
 	newExecutor  func() domain.ToolExecutor
@@ -52,10 +55,78 @@ type inspectJSONOutput struct {
 	StepSummaries    []string             `json:"step_summaries"`
 }
 
+// configFlagNames contains the flag names that config.Load recognizes.
+// These are the only flags that should be passed to config.Load.
+// Other flags like --task, --session, --db, --json are run/resume/inspect specific.
+var configFlagNames = map[string]bool{
+	"config":         true,
+	"model":          true,
+	"provider":       true,
+	"max-steps":      true,
+	"step-timeout":   true,
+	"memory-limit-mb": true,
+	"verify-mode":    true,
+	"api-key":        true,
+	"base-url":       true,
+}
+
+// filterConfigArgs extracts only the config-related flags from args.
+// This prevents "flag provided but not defined" errors when passing
+// run/resume/inspect subcommand arguments to config.Load.
+func filterConfigArgs(args []string) []string {
+	var filtered []string
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		// Check if this arg is a config flag (handles both -flag and --flag forms)
+		flagName := strings.TrimLeft(arg, "-")
+		if equalsIndex := strings.Index(flagName, "="); equalsIndex != -1 {
+			flagName = flagName[:equalsIndex]
+		}
+		if configFlagNames[flagName] {
+			filtered = append(filtered, arg)
+			// All config flags take a value. If using -flag=value form, value is already included.
+			// If using -flag value form, need to include the next arg as the value.
+			if !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				filtered = append(filtered, args[i])
+			}
+		}
+		i++
+	}
+	return filtered
+}
+
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	cfg := config.Default()
+	if len(args) > 0 && (args[0] == "run" || args[0] == "resume") {
+		filteredArgs := filterConfigArgs(args[1:])
+		loaded, err := config.Load(filteredArgs)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, err)
+			return 1
+		}
+		cfg = loaded
+	}
+
+	modelFactory := func() domain.Model {
+		return &FakeModel{}
+	}
+	if cfg.GetProviderType() == config.ProviderDashScope {
+		provider, err := llm.NewProvider(cfg)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, err)
+			return 1
+		}
+		modelFactory = func() domain.Model {
+			return runtime.NewModelAdapter(provider)
+		}
+	}
+
 	app := cliApp{
 		stdout: stdout,
 		stderr: stderr,
+		cfg:    cfg,
 		newSession: func(dbPath string) (*store.SQLiteSessionStore, error) {
 			return store.NewSQLiteSessionStore(dbPath)
 		},
@@ -65,9 +136,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		newExecutor: func() domain.ToolExecutor {
 			return FakeToolExecutor{}
 		},
-		newModel: func() domain.Model {
-			return &FakeModel{}
-		},
+		newModel: modelFactory,
 		newVerifier: func() domain.Verifier {
 			return FakeVerifier{}
 		},
@@ -113,9 +182,16 @@ func (a cliApp) run(ctx context.Context, args []string) int {
 func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
+	// Dummy --config and --provider flags to allow CLI to accept them without error.
+	// The actual config loading happens in runCLI before this is called.
+	_ = fs.String("config", "", "config file path (unused in subcommand)")
+	_ = fs.String("provider", "", "provider (unused in subcommand)")
+	_ = fs.String("model", "", "model (unused in subcommand)")
+	_ = fs.String("api-key", "", "API key (unused in subcommand)")
+	_ = fs.String("base-url", "", "base URL (unused in subcommand)")
 	taskInput := fs.String("task", "", "task description")
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
-	maxSteps := fs.Int("max-steps", 8, "maximum runtime steps")
+	maxSteps := fs.Int("max-steps", a.defaultMaxSteps(), "maximum runtime steps")
 	jsonMode := fs.Bool("json", false, "emit machine-readable JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -154,7 +230,7 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 		Verifier:       a.newVerifier(),
 		MaxSteps:       *maxSteps,
 		MaxRetries:     *maxSteps,
-		SessionTimeout: time.Duration(*maxSteps) * 30 * time.Second,
+		SessionTimeout: a.sessionTimeout(*maxSteps),
 	}
 
 	runCtx, stop := a.withSignalCancellation(ctx)
@@ -195,9 +271,16 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
+	// Dummy --config and --provider flags to allow CLI to accept them without error.
+	// The actual config loading happens in runCLI before this is called.
+	_ = fs.String("config", "", "config file path (unused in subcommand)")
+	_ = fs.String("provider", "", "provider (unused in subcommand)")
+	_ = fs.String("model", "", "model (unused in subcommand)")
+	_ = fs.String("api-key", "", "API key (unused in subcommand)")
+	_ = fs.String("base-url", "", "base URL (unused in subcommand)")
 	sessionID := fs.String("session", "", "session identifier")
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
-	maxSteps := fs.Int("max-steps", 8, "maximum runtime steps")
+	maxSteps := fs.Int("max-steps", a.defaultMaxSteps(), "maximum runtime steps")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -232,7 +315,7 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 		Verifier:       a.newVerifier(),
 		MaxSteps:       *maxSteps,
 		MaxRetries:     *maxSteps,
-		SessionTimeout: time.Duration(*maxSteps) * 30 * time.Second,
+		SessionTimeout: a.sessionTimeout(*maxSteps),
 	}
 
 	runCtx, stop := a.withSignalCancellation(ctx)
@@ -273,6 +356,13 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 func (a cliApp) inspectCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
+	// Dummy --config and --provider flags to allow CLI to accept them without error.
+	// The actual config loading happens in runCLI before this is called.
+	_ = fs.String("config", "", "config file path (unused in subcommand)")
+	_ = fs.String("provider", "", "provider (unused in subcommand)")
+	_ = fs.String("model", "", "model (unused in subcommand)")
+	_ = fs.String("api-key", "", "API key (unused in subcommand)")
+	_ = fs.String("base-url", "", "base URL (unused in subcommand)")
 	sessionID := fs.String("session", "", "session identifier")
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
 	jsonMode := fs.Bool("json", false, "emit machine-readable JSON")
@@ -312,6 +402,27 @@ func (a cliApp) openRuntimeDeps(dbPath string) (*store.SQLiteSessionStore, *stor
 		_ = memoryStore.Close()
 	}
 	return sessionStore, memoryStore, cleanup, nil
+}
+
+func (a cliApp) defaultMaxSteps() int {
+	if a.cfg.Runtime.MaxSteps > 0 {
+		return a.cfg.Runtime.MaxSteps
+	}
+	return 8
+}
+
+func (a cliApp) stepTimeout() time.Duration {
+	if a.cfg.Runtime.StepTimeout > 0 {
+		return a.cfg.Runtime.StepTimeout
+	}
+	return 30 * time.Second
+}
+
+func (a cliApp) sessionTimeout(maxSteps int) time.Duration {
+	if maxSteps <= 0 {
+		maxSteps = a.defaultMaxSteps()
+	}
+	return time.Duration(maxSteps) * a.stepTimeout()
 }
 
 func (a cliApp) withSignalCancellation(ctx context.Context) (context.Context, func()) {
