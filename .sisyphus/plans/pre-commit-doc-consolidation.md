@@ -281,10 +281,10 @@ Wave 2: add continuation guidance and pre-push validation (`4-5`)
   **Commit**: NO | Message: `n/a` | Files: [none]
 
 ## Final Verification Wave (MANDATORY — after ALL implementation tasks)
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - Create one documentation-focused commit after all doc-role normalization is complete.
