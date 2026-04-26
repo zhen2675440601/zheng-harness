@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"zheng-harness/internal/domain"
@@ -15,12 +16,51 @@ type Executor struct {
 	policy   SafetyPolicy
 }
 
+var defaultAllowedCommands = []string{
+	"go", "git", "pwd", "ls", "dir",
+	"npm", "node", "npx", "yarn", "pnpm",
+	"python", "python3", "pip", "pip3", "uv",
+	"make", "cargo", "rustc",
+	"docker", "docker-compose",
+	"cat", "head", "tail", "echo",
+	"mkdir", "cp", "mv", "env", "which", "ctest",
+}
+
+type executorOptions struct {
+	allowedCommands      []string
+	extraAllowedCommands []string
+}
+
+// ExecutorOption customizes executor safety settings.
+type ExecutorOption func(*executorOptions)
+
+// WithAllowedCommands overrides the default command allowlist when non-empty.
+func WithAllowedCommands(commands []string) ExecutorOption {
+	return func(opts *executorOptions) {
+		opts.allowedCommands = append([]string(nil), commands...)
+	}
+}
+
+// WithExtraAllowedCommands appends commands to the active allowlist.
+func WithExtraAllowedCommands(commands []string) ExecutorOption {
+	return func(opts *executorOptions) {
+		opts.extraAllowedCommands = append(opts.extraAllowedCommands, commands...)
+	}
+}
+
 // NewExecutor constructs a tool executor and registers the built-in toolset.
-func NewExecutor(workspaceRoot string) (*Executor, error) {
+func NewExecutor(workspaceRoot string, options ...ExecutorOption) (*Executor, error) {
 	registry := NewRegistry()
+	opts := executorOptions{}
+	for _, option := range options {
+		if option != nil {
+			option(&opts)
+		}
+	}
 	policy := SafetyPolicy{
 		WorkspaceRoot:     workspaceRoot,
-		AllowedCommands:   []string{"go", "git", "pwd", "ls", "dir"},
+		AllowedCommands:   buildAllowedCommands(opts.allowedCommands, opts.extraAllowedCommands),
+		DeniedCommands:    []string{"rm"},
 		AllowedReadRoots:  []string{"."},
 		AllowedWriteRoots: []string{"."},
 	}
@@ -59,8 +99,14 @@ func (e *Executor) Registry() *Registry {
 	return e.registry
 }
 
+// Policy exposes the executor safety policy for tests and wiring.
+func (e *Executor) Policy() SafetyPolicy {
+	return e.policy
+}
+
 func builtinDefinitions(workspaceRoot string) []ToolDefinition {
 	fileAdapter := adapters.NewFileAdapter(workspaceRoot)
+	globAdapter := adapters.NewGlobAdapter(workspaceRoot)
 	searchAdapter := adapters.NewSearchAdapter(workspaceRoot)
 	shellAdapter := adapters.NewShellAdapter(workspaceRoot)
 
@@ -90,6 +136,22 @@ func builtinDefinitions(workspaceRoot string) []ToolDefinition {
 			Handler:        fileAdapter.WriteFile,
 		},
 		{
+			Name:           "edit_file",
+			Description:    "Edit file content by replacing one unique text occurrence",
+			Schema:         `{"type":"string","description":"first line is relative file path; remaining payload is <<<OLD\n<multiline old text>\n<<<NEW\n<multiline new text>"}`,
+			DefaultTimeout: 5 * time.Second,
+			SafetyLevel:    SafetyLevelMedium,
+			Handler:        fileAdapter.EditFile,
+		},
+		{
+			Name:           "glob",
+			Description:    "Find files matching a glob pattern (e.g., **/*.go, src/**/*.ts, *.json)",
+			Schema:         `{"type":"string","description":"glob pattern to match files (supports ** for recursive)"}`,
+			DefaultTimeout: 5 * time.Second,
+			SafetyLevel:    SafetyLevelLow,
+			Handler:        globAdapter.Glob,
+		},
+		{
 			Name:           "grep_search",
 			Description:    "Search text under the workspace",
 			Schema:         `{"type":"string","description":"search term or regular expression literal"}`,
@@ -106,4 +168,27 @@ func builtinDefinitions(workspaceRoot string) []ToolDefinition {
 			Handler:        shellAdapter.Exec,
 		},
 	}
+}
+
+func buildAllowedCommands(configured []string, extras []string) []string {
+	base := defaultAllowedCommands
+	if len(configured) > 0 {
+		base = configured
+	}
+
+	seen := make(map[string]struct{}, len(base)+len(extras))
+	allowed := make([]string, 0, len(base)+len(extras))
+	for _, command := range append(append([]string(nil), base...), extras...) {
+		trimmed := strings.TrimSpace(command)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		allowed = append(allowed, trimmed)
+	}
+	return allowed
 }

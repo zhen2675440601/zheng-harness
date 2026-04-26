@@ -171,6 +171,37 @@ func TestLoadUsesMultiProviderConfigAndSwitchesProvider(t *testing.T) {
 	}
 }
 
+func TestLoadUsesRuntimeAllowedCommandsOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "openai",
+		"providers": {
+			"openai": {
+				"type": "openai",
+				"model": "gpt-4.1-mini"
+			}
+		},
+		"runtime": {
+			"max_steps": 6,
+			"step_timeout": "40s",
+			"memory_limit_mb": 300,
+			"verify_mode": "standard",
+			"allowed_commands": ["go"]
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	cfg, err := config.Load([]string{"-config", configPath})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if len(cfg.Runtime.AllowedCommands) != 1 || cfg.Runtime.AllowedCommands[0] != "go" {
+		t.Fatalf("allowed commands = %v, want [go]", cfg.Runtime.AllowedCommands)
+	}
+}
+
 func TestLoadUsesDefaultConfigPath(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {

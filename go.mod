@@ -1,12 +1,14 @@
 module zheng-harness
 
-go 1.22.0
+go 1.26.0
 
 require modernc.org/sqlite v1.34.5
 
 require (
+	github.com/bmatcuk/doublestar/v2 v2.0.4 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

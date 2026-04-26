@@ -3,13 +3,16 @@ package prompts
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"zheng-harness/internal/domain"
 )
 
+const maxToolSchemaLength = 1200
+
 // BuildCreatePlanInput renders the provider input for plan generation.
-func BuildCreatePlanInput(task domain.Task, session domain.Session) string {
-	return mustMarshalPrompt(map[string]any{
+func BuildCreatePlanInput(task domain.Task, session domain.Session, memory []domain.MemoryEntry) string {
+	payload := map[string]any{
 		"operation": "create_plan",
 		"instructions": []string{
 			"Return JSON only.",
@@ -25,11 +28,17 @@ func BuildCreatePlanInput(task domain.Task, session domain.Session) string {
 			"id":     session.ID,
 			"status": session.Status,
 		},
-	})
+	}
+
+	if memoryPayload := buildMemoryPayload(memory); len(memoryPayload) > 0 {
+		payload["memory"] = memoryPayload
+	}
+
+	return mustMarshalPrompt(payload)
 }
 
 // BuildNextActionInput renders the provider input for action selection.
-func BuildNextActionInput(task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step) string {
+func BuildNextActionInput(task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step, tools []domain.ToolInfo, memory []domain.MemoryEntry) string {
 	history := make([]map[string]any, 0, len(steps))
 	for _, step := range steps {
 		history = append(history, map[string]any{
@@ -43,7 +52,7 @@ func BuildNextActionInput(task domain.Task, session domain.Session, plan domain.
 		})
 	}
 
-	return mustMarshalPrompt(map[string]any{
+	payload := map[string]any{
 		"operation": "next_action",
 		"instructions": []string{
 			"Return JSON only.",
@@ -65,7 +74,16 @@ func BuildNextActionInput(task domain.Task, session domain.Session, plan domain.
 			"summary": plan.Summary,
 		},
 		"history": history,
-	})
+	}
+
+	if toolsPayload := buildToolsPayload(tools); len(toolsPayload) > 0 {
+		payload["tools"] = toolsPayload
+	}
+	if memoryPayload := buildMemoryPayload(memory); len(memoryPayload) > 0 {
+		payload["memory"] = memoryPayload
+	}
+
+	return mustMarshalPrompt(payload)
 }
 
 // BuildObserveInput renders the provider input for post-action observation.
@@ -126,4 +144,62 @@ func mustMarshalPrompt(payload map[string]any) string {
 		panic(fmt.Sprintf("marshal prompt payload: %v", err))
 	}
 	return string(data)
+}
+
+func buildToolsPayload(tools []domain.ToolInfo) []map[string]any {
+	if len(tools) == 0 {
+		return nil
+	}
+
+	payload := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			continue
+		}
+		payload = append(payload, map[string]any{
+			"name":        name,
+			"description": strings.TrimSpace(tool.Description),
+			"schema":      truncateToolSchema(tool.Schema),
+		})
+	}
+
+	if len(payload) == 0 {
+		return nil
+	}
+	return payload
+}
+
+func buildMemoryPayload(memory []domain.MemoryEntry) []map[string]any {
+	if len(memory) == 0 {
+		return nil
+	}
+
+	payload := make([]map[string]any, 0, len(memory))
+	for _, entry := range memory {
+		content := strings.TrimSpace(entry.Value)
+		if content == "" {
+			continue
+		}
+		payload = append(payload, map[string]any{
+			"scope":      entry.Scope,
+			"type":       entry.Type,
+			"content":    content,
+			"confidence": entry.Confidence,
+			"source":     strings.TrimSpace(entry.Source),
+		})
+	}
+
+	if len(payload) == 0 {
+		return nil
+	}
+	return payload
+}
+
+func truncateToolSchema(schema string) string {
+	trimmed := strings.TrimSpace(schema)
+	if len(trimmed) <= maxToolSchemaLength {
+		return trimmed
+	}
+	return strings.TrimSpace(trimmed[:maxToolSchemaLength]) + "…(truncated)"
 }

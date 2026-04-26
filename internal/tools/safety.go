@@ -11,9 +11,10 @@ import (
 
 // SafetyPolicy enforces local tool usage boundaries.
 type SafetyPolicy struct {
-	WorkspaceRoot    string
-	AllowedCommands  []string
-	AllowedReadRoots []string
+	WorkspaceRoot     string
+	AllowedCommands   []string
+	DeniedCommands    []string
+	AllowedReadRoots  []string
 	AllowedWriteRoots []string
 }
 
@@ -31,7 +32,7 @@ func (p SafetyPolicy) Validate(def ToolDefinition, call domain.ToolCall) error {
 	switch def.Name {
 	case "read_file", "list_dir", "grep_search":
 		return p.validatePathPayload(call.Input, root, p.readRoots(root))
-	case "write_file":
+	case "write_file", "edit_file":
 		pathPart := strings.SplitN(call.Input, "\n", 2)[0]
 		return p.validatePathPayload(strings.TrimSpace(pathPart), root, p.writeRoots(root))
 	case "exec_command":
@@ -65,18 +66,30 @@ func (p SafetyPolicy) validateCommand(raw string) error {
 	if command == "" {
 		return fmt.Errorf("command must not be empty")
 	}
+	// Reject command chaining operators before any parsing
+	if strings.Contains(command, "&&") || strings.Contains(command, "||") || strings.Contains(command, ";") {
+		return fmt.Errorf("command chaining (&&, ||, ;) is not allowed")
+	}
 	fields := strings.Fields(command)
 	if len(fields) == 0 {
 		return fmt.Errorf("command must not be empty")
 	}
 	allowed := append([]string(nil), p.AllowedCommands...)
 	sort.Strings(allowed)
+	executable := fields[0]
 	for _, candidate := range allowed {
-		if strings.EqualFold(candidate, fields[0]) {
+		if strings.EqualFold(candidate, executable) {
+			denied := append([]string(nil), p.DeniedCommands...)
+			sort.Strings(denied)
+			for _, blocked := range denied {
+				if strings.EqualFold(blocked, executable) {
+					return fmt.Errorf("command is explicitly denied for safety")
+				}
+			}
 			return nil
 		}
 	}
-	return fmt.Errorf("command %q is not allowlisted", fields[0])
+	return fmt.Errorf("command %q is not allowlisted", executable)
 }
 
 func (p SafetyPolicy) readRoots(workspaceRoot string) []string {

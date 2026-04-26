@@ -15,8 +15,8 @@ type Request struct {
 
 // Response is the normalized provider output returned to runtime callers.
 type Response struct {
-	Model   string
-	Output  string
+	Model      string
+	Output     string
 	StopReason string
 }
 
@@ -40,9 +40,17 @@ type ProviderConfig interface {
 func NewProvider(cfg ProviderConfig) (Provider, error) {
 	switch cfg.GetProviderType() {
 	case config.ProviderOpenAI:
-		return NewOpenAIProvider(cfg.GetModel()), nil
+		baseURL := cfg.GetBaseURL()
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		return NewOpenAIProvider(cfg.GetAPIKey(), baseURL, cfg.GetModel()), nil
 	case config.ProviderAnthropic:
-		return NewAnthropicProvider(cfg.GetModel()), nil
+		baseURL := cfg.GetBaseURL()
+		if baseURL == "" {
+			baseURL = "https://api.anthropic.com/v1"
+		}
+		return NewAnthropicProvider(cfg.GetAPIKey(), baseURL, cfg.GetModel()), nil
 	case config.ProviderDashScope:
 		baseURL := cfg.GetBaseURL()
 		if baseURL == "" {

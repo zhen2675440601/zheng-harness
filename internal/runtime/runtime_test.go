@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"zheng-harness/internal/domain"
+	memorypolicy "zheng-harness/internal/memory"
 	"zheng-harness/internal/runtime"
 )
 
@@ -316,15 +317,193 @@ type fakeModel struct {
 	planErr         error
 	actionErr       error
 	observeErr      error
+	createPlanMemory [][]domain.MemoryEntry
+	nextActionMemory [][]domain.MemoryEntry
+	nextActionTools  [][]domain.ToolInfo
 	createPlanCalls int
 	nextActionCalls int
 	observeCalls    int
 }
 
-func (f *fakeModel) CreatePlan(_ context.Context, _ domain.Task, _ domain.Session) (domain.Plan, error) {
+func TestMemoryRecallInLoop(t *testing.T) {
+	t.Parallel()
+
+	fixedTime := time.Date(2026, 4, 26, 9, 0, 0, 0, time.UTC)
+	task := domain.Task{ID: "task-memory-loop", Description: "inspect repository", Goal: "complete", CreatedAt: fixedTime}
+
+	model := &fakeModel{
+		plans: []domain.Plan{
+			{ID: "plan-1", TaskID: task.ID, Summary: "first attempt"},
+			{ID: "plan-2", TaskID: task.ID, Summary: "retry with memory"},
+		},
+		actions: []domain.Action{
+			{Type: domain.ActionTypeRespond, Summary: "attempt 1", Response: "need more work"},
+			{Type: domain.ActionTypeRespond, Summary: "attempt 2", Response: "done"},
+		},
+		observations: []domain.Observation{
+			{Summary: "found key context from repository"},
+			{Summary: "completed with recalled context"},
+		},
+	}
+
+	memory := &fakeMemoryStore{}
+	engine := runtime.Engine{
+		Model:          model,
+		Tools:          &fakeToolExecutor{},
+		Memory:         memory,
+		Sessions:       &fakeSessionStore{},
+		Verifier:       &fakeVerifier{results: []domain.VerificationResult{{Passed: false, Reason: "first failed"}, {Passed: true, Reason: "second passed"}}},
+		Clock:          fixedClock(fixedTime),
+		MaxSteps:       3,
+		MaxRetries:     2,
+		SessionTimeout: time.Minute,
+	}
+
+	_, _, _, err := engine.Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if model.nextActionCalls < 2 {
+		t.Fatalf("nextActionCalls = %d, want at least 2", model.nextActionCalls)
+	}
+	if len(model.nextActionMemory) < 2 {
+		t.Fatalf("nextActionMemory calls = %d, want at least 2", len(model.nextActionMemory))
+	}
+	if got := len(model.nextActionMemory[1]); got == 0 {
+		t.Fatalf("second NextAction memory len = %d, want > 0 from prior Remember", got)
+	}
+}
+
+func TestNoMemoryFirstTurn(t *testing.T) {
+	t.Parallel()
+
+	fixedTime := time.Date(2026, 4, 26, 9, 5, 0, 0, time.UTC)
+	task := domain.Task{ID: "task-no-memory", Description: "new task", Goal: "done", CreatedAt: fixedTime}
+
+	model := &fakeModel{
+		plans:        []domain.Plan{{ID: "plan-1", TaskID: task.ID, Summary: "single pass"}},
+		actions:      []domain.Action{{Type: domain.ActionTypeRespond, Summary: "respond", Response: "ok"}},
+		observations: []domain.Observation{{Summary: "done"}},
+	}
+
+	engine := runtime.Engine{
+		Model:          model,
+		Tools:          &fakeToolExecutor{},
+		Memory:         &fakeMemoryStore{},
+		Sessions:       &fakeSessionStore{},
+		Verifier:       &fakeVerifier{results: []domain.VerificationResult{{Passed: true, Reason: "ok"}}},
+		Clock:          fixedClock(fixedTime),
+		MaxSteps:       1,
+		MaxRetries:     0,
+		SessionTimeout: time.Minute,
+	}
+
+	_, _, _, err := engine.Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if len(model.createPlanMemory) != 1 {
+		t.Fatalf("createPlanMemory calls = %d, want 1", len(model.createPlanMemory))
+	}
+	if got := len(model.createPlanMemory[0]); got != 0 {
+		t.Fatalf("first CreatePlan memory len = %d, want 0", got)
+	}
+	if len(model.nextActionMemory) != 1 {
+		t.Fatalf("nextActionMemory calls = %d, want 1", len(model.nextActionMemory))
+	}
+	if got := len(model.nextActionMemory[0]); got != 0 {
+		t.Fatalf("first NextAction memory len = %d, want 0", got)
+	}
+}
+
+func TestRuntimeContinuesWhenMemoryRecallFails(t *testing.T) {
+	t.Parallel()
+
+	fixedTime := time.Date(2026, 4, 26, 9, 15, 0, 0, time.UTC)
+	task := domain.Task{ID: "task-memory-error", Description: "inspect", Goal: "done", CreatedAt: fixedTime}
+
+	model := &fakeModel{
+		plans:        []domain.Plan{{ID: "plan-1", TaskID: task.ID, Summary: "single pass"}},
+		actions:      []domain.Action{{Type: domain.ActionTypeRespond, Summary: "respond", Response: "ok"}},
+		observations: []domain.Observation{{Summary: "done"}},
+	}
+
+	engine := runtime.Engine{
+		Model:          model,
+		Tools:          &fakeToolExecutor{},
+		Memory:         &fakeMemoryStore{recallErr: errors.New("db offline")},
+		Sessions:       &fakeSessionStore{},
+		Verifier:       &fakeVerifier{results: []domain.VerificationResult{{Passed: true, Reason: "ok"}}},
+		Clock:          fixedClock(fixedTime),
+		MaxSteps:       1,
+		MaxRetries:     0,
+		SessionTimeout: time.Minute,
+	}
+
+	_, _, _, err := engine.Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(model.createPlanMemory) != 1 || len(model.createPlanMemory[0]) != 0 {
+		t.Fatalf("createPlanMemory = %#v, want empty memory after recall failure", model.createPlanMemory)
+	}
+	if len(model.nextActionMemory) != 1 || len(model.nextActionMemory[0]) != 0 {
+		t.Fatalf("nextActionMemory = %#v, want empty memory after recall failure", model.nextActionMemory)
+	}
+}
+
+func TestRuntimeCapturesToolExecutionErrorInObservation(t *testing.T) {
+	t.Parallel()
+
+	fixedTime := time.Date(2026, 4, 26, 9, 20, 0, 0, time.UTC)
+	task := domain.Task{ID: "task-tool-error", Description: "inspect", Goal: "done", CreatedAt: fixedTime}
+
+	model := &fakeModel{
+		plans: []domain.Plan{{ID: "plan-1", TaskID: task.ID, Summary: "single pass"}},
+		actions: []domain.Action{{
+			Type:    domain.ActionTypeToolCall,
+			Summary: "run search",
+			ToolCall: &domain.ToolCall{Name: "grep_search", Input: "alpha"},
+		}},
+		observations: []domain.Observation{{Summary: "tool failed"}},
+	}
+
+	engine := runtime.Engine{
+		Model: model,
+		Tools: &fakeToolExecutor{executeFn: func(_ context.Context, _ domain.ToolCall, _ int) (domain.ToolResult, error) {
+			return domain.ToolResult{ToolName: "grep_search", Output: "partial output"}, errors.New("tool exploded")
+		}},
+		Memory:         &fakeMemoryStore{},
+		Sessions:       &fakeSessionStore{},
+		Verifier:       &fakeVerifier{results: []domain.VerificationResult{{Passed: true, Reason: "ok"}}},
+		Clock:          fixedClock(fixedTime),
+		MaxSteps:       1,
+		MaxRetries:     0,
+		SessionTimeout: time.Minute,
+	}
+
+	_, _, steps, err := engine.Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if steps[0].Observation.ToolResult == nil {
+		t.Fatal("expected tool result in observation")
+	}
+	if got := steps[0].Observation.ToolResult.Error; got != "tool exploded" {
+		t.Fatalf("tool result error = %q, want tool exploded", got)
+	}
+	if got := steps[0].Observation.ToolResult.Output; got != "partial output" {
+		t.Fatalf("tool result output = %q, want partial output", got)
+	}
+}
+
+func (f *fakeModel) CreatePlan(_ context.Context, _ domain.Task, _ domain.Session, memory []domain.MemoryEntry) (domain.Plan, error) {
 	if f.planErr != nil {
 		return domain.Plan{}, f.planErr
 	}
+	f.createPlanMemory = append(f.createPlanMemory, append([]domain.MemoryEntry(nil), memory...))
 	if f.createPlanCalls >= len(f.plans) {
 		return domain.Plan{}, errors.New("unexpected CreatePlan call")
 	}
@@ -333,10 +512,12 @@ func (f *fakeModel) CreatePlan(_ context.Context, _ domain.Task, _ domain.Sessio
 	return plan, nil
 }
 
-func (f *fakeModel) NextAction(_ context.Context, _ domain.Task, _ domain.Session, _ domain.Plan, _ []domain.Step) (domain.Action, error) {
+func (f *fakeModel) NextAction(_ context.Context, _ domain.Task, _ domain.Session, _ domain.Plan, _ []domain.Step, memory []domain.MemoryEntry, tools []domain.ToolInfo) (domain.Action, error) {
 	if f.actionErr != nil {
 		return domain.Action{}, f.actionErr
 	}
+	f.nextActionMemory = append(f.nextActionMemory, append([]domain.MemoryEntry(nil), memory...))
+	f.nextActionTools = append(f.nextActionTools, append([]domain.ToolInfo(nil), tools...))
 	if f.nextActionCalls >= len(f.actions) {
 		return domain.Action{}, errors.New("unexpected NextAction call")
 	}
@@ -392,12 +573,59 @@ func (f *fakeToolExecutor) Execute(ctx context.Context, call domain.ToolCall) (d
 }
 
 type fakeMemoryStore struct {
-	remembered []domain.Observation
+	remembered   []domain.MemoryEntry
+	recallErr    error
+	recallSeed   []domain.MemoryEntry
+	recallQueries []domain.RecallQuery
 }
 
-func (f *fakeMemoryStore) Remember(_ context.Context, _ string, observation domain.Observation) error {
-	f.remembered = append(f.remembered, observation)
+func (f *fakeMemoryStore) Remember(_ context.Context, sessionID string, observation domain.Observation) error {
+	value := observation.Summary
+	if observation.ToolResult != nil && observation.ToolResult.Output != "" {
+		value = observation.ToolResult.Output
+	}
+	f.remembered = append(f.remembered, domain.MemoryEntry{
+		SessionID: sessionID,
+		Scope:     memorypolicy.ScopeSession,
+		Type:      memorypolicy.TypeSummary,
+		Key:       "runtime_test_remembered",
+		Value:     value,
+		Source:    "runtime_test",
+	})
 	return nil
+}
+
+
+func (f *fakeMemoryStore) Recall(_ context.Context, query domain.RecallQuery) ([]domain.MemoryEntry, error) {
+	f.recallQueries = append(f.recallQueries, query)
+	if f.recallErr != nil {
+		return nil, f.recallErr
+	}
+
+	all := make([]domain.MemoryEntry, 0, len(f.recallSeed)+len(f.remembered))
+	all = append(all, f.recallSeed...)
+	all = append(all, f.remembered...)
+
+	entries := make([]domain.MemoryEntry, 0, len(all))
+	for _, entry := range all {
+		if query.Scope != "" && entry.Scope != query.Scope {
+			continue
+		}
+		if query.Type != "" && entry.Type != query.Type {
+			continue
+		}
+		if query.Scope == memorypolicy.ScopeSession && entry.SessionID != query.SessionID {
+			continue
+		}
+		if query.Key != "" && entry.Key != query.Key {
+			continue
+		}
+		entries = append(entries, entry)
+		if query.Limit > 0 && len(entries) >= query.Limit {
+			break
+		}
+	}
+	return entries, nil
 }
 
 type fakeSessionStore struct {

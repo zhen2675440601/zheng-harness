@@ -10,7 +10,9 @@ const (
 	// SystemPromptV1_0 centralizes the baseline coding-agent policy text.
 	SystemPromptV1_0 = `You are zheng-agent, a CLI-first coding agent.
 Stay within configured tool and verification boundaries.
-Prefer explicit evidence, bounded steps, and inspectable outputs.`
+Prefer explicit evidence, bounded steps, and inspectable outputs.
+Use only tools listed in the prompt input when needed.
+When a tool is required, emit a tool_call action with valid tool name/input/timeout.`
 )
 
 // SystemPrompt returns a versioned system prompt.

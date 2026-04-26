@@ -1,6 +1,8 @@
 # CLI Usage
 
-`zheng-agent` 是一个 CLI-first 的单进程 Coding Agent。v1 只支持本地命令行运行，不包含 Web UI、多代理编排、插件系统或向量数据库。
+`zheng-agent` 是一个 **通用 Agent Harness** CLI。v1 只支持本地命令行运行，不包含 Web UI、多代理编排、插件系统或向量数据库。
+
+本文档仅描述 CLI 使用方法。项目进度见 [PROGRESS.md](../PROGRESS.md)，下一阶段计划见 [.sisyphus/plans/](../.sisyphus/plans/)。
 
 ## 命令概览
 
@@ -14,7 +16,7 @@ zheng-agent inspect --session <id>
 
 ## 先决条件
 
-- Go 1.22+
+- Go 1.26.0
 - 可写的本地文件系统（用于 `agent.db`）
 - 已克隆本仓库
 
@@ -153,7 +155,7 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 
 ## 环境变量配置
 
-运行时配置支持以下优先级：**CLI flags > 配置文件 > 环境变量 > 默认值**。
+运行时配置支持以下优先级：**CLI flags > 环境变量 > 配置文件 > 默认值**。
 
 ## 配置文件
 
@@ -170,14 +172,27 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 
 ```json
 {
-  "provider": "dashscope",
-  "model": "qwen3.6-plus",
-  "api_key": "sk-sp-xxx",
-  "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1",
-  "max_steps": 8,
-  "step_timeout": "30s",
-  "memory_limit_mb": 256,
-  "verify_mode": "standard"
+  "default_provider": "dashscope",
+  "providers": {
+    "dashscope": {
+      "type": "dashscope",
+      "model": "qwen3.6-plus",
+      "api_key": "sk-sp-xxx",
+      "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
+    },
+    "openai": {
+      "type": "openai",
+      "model": "gpt-4.1-mini",
+      "api_key": "sk-xxx",
+      "base_url": "https://api.openai.com/v1"
+    }
+  },
+  "runtime": {
+    "max_steps": 8,
+    "step_timeout": "30s",
+    "memory_limit_mb": 256,
+    "verify_mode": "standard"
+  }
 }
 ```
 
@@ -207,7 +222,7 @@ go run ./cmd/agent run \
 含义如下：
 
 - `ZHENG_MODEL`：模型标识
-- `ZHENG_PROVIDER`：Provider，当前支持 `openai`、`anthropic`
+- `ZHENG_PROVIDER`：Provider，当前支持 `openai`、`anthropic`、`dashscope`
 - `ZHENG_MAX_STEPS`：默认最大执行步数
 - `ZHENG_STEP_TIMEOUT`：单步超时，例如 `30s`
 - `ZHENG_MEMORY_LIMIT_MB`：内存预算（MB）

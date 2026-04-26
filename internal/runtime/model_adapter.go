@@ -47,8 +47,8 @@ func NewModelAdapter(provider llm.Provider) *ModelAdapter {
 	return &ModelAdapter{provider: provider, systemPrompt: strings.TrimSpace(systemPrompt)}
 }
 
-func (m *ModelAdapter) CreatePlan(ctx context.Context, task domain.Task, session domain.Session) (domain.Plan, error) {
-	response, err := m.generate(ctx, prompts.BuildCreatePlanInput(task, session))
+func (m *ModelAdapter) CreatePlan(ctx context.Context, task domain.Task, session domain.Session, memory []domain.MemoryEntry) (domain.Plan, error) {
+	response, err := m.generate(ctx, buildCreatePlanInput(task, session, memory))
 	if err != nil {
 		return domain.Plan{}, err
 	}
@@ -86,8 +86,8 @@ func (m *ModelAdapter) CreatePlan(ctx context.Context, task domain.Task, session
 	}, nil
 }
 
-func (m *ModelAdapter) NextAction(ctx context.Context, task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step) (domain.Action, error) {
-	response, err := m.generate(ctx, prompts.BuildNextActionInput(task, session, plan, steps))
+func (m *ModelAdapter) NextAction(ctx context.Context, task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step, memory []domain.MemoryEntry, tools []domain.ToolInfo) (domain.Action, error) {
+	response, err := m.generate(ctx, buildNextActionInput(task, session, plan, steps, memory, tools))
 	if err != nil {
 		return domain.Action{}, err
 	}
@@ -214,4 +214,12 @@ func decodeJSONResponse(raw string, target any) error {
 		return fmt.Errorf("parse JSON output %q: %w", trimmed, err)
 	}
 	return nil
+}
+
+func buildCreatePlanInput(task domain.Task, session domain.Session, memory []domain.MemoryEntry) string {
+	return prompts.BuildCreatePlanInput(task, session, memory)
+}
+
+func buildNextActionInput(task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step, memory []domain.MemoryEntry, tools []domain.ToolInfo) string {
+	return prompts.BuildNextActionInput(task, session, plan, steps, tools, memory)
 }

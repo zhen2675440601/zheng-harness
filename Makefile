@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-race test-cover
+.PHONY: fmt lint test test-race test-cover notecheck
 
 fmt:
 	gofmt -w .
@@ -14,3 +14,6 @@ test-race:
 
 test-cover:
 	go test -cover ./...
+
+notecheck:
+	powershell -ExecutionPolicy Bypass -File ./scripts/check-notepads.ps1

@@ -4,12 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"sort"
+	"strings"
 	"time"
 
 	"zheng-harness/internal/domain"
+	memorypolicy "zheng-harness/internal/memory"
 )
 
 var errRetryBudgetExceeded = errors.New("runtime retry budget exceeded")
+
+type toolInfoLister interface {
+	ListToolInfo() []domain.ToolInfo
+}
+
+type toolExecutorWithRegistry interface {
+	Registry() toolInfoLister
+}
 
 // Engine coordinates a bounded multi-step runtime loop using domain ports only.
 type Engine struct {
@@ -35,14 +47,8 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 		now = e.Clock
 	}
 
-	maxSteps := e.MaxSteps
-	if maxSteps <= 0 {
-		maxSteps = 1
-	}
-	maxRetries := e.MaxRetries
-	if maxRetries < 0 {
-		maxRetries = 0
-	}
+	maxSteps := max(e.MaxSteps, 1)
+	maxRetries := max(e.MaxRetries, 0)
 	sessionTimeout := e.SessionTimeout
 	if sessionTimeout <= 0 {
 		sessionTimeout = 5 * time.Minute
@@ -132,7 +138,10 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 }
 
 func (e Engine) createPlan(ctx context.Context, task domain.Task, session domain.Session, createdAt time.Time) (domain.Plan, error) {
-	plan, err := e.Model.CreatePlan(ctx, task, session)
+	tools := e.listToolInfo()
+	memory := e.recallMemory(ctx, task, session)
+	_ = tools
+	plan, err := e.Model.CreatePlan(ctx, task, session, memory)
 	if err != nil {
 		return domain.Plan{}, err
 	}
@@ -149,7 +158,9 @@ func (e Engine) createPlan(ctx context.Context, task domain.Task, session domain
 }
 
 func (e Engine) executeIteration(ctx context.Context, task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step) (domain.Action, domain.Observation, domain.VerificationResult, error) {
-	action, err := e.Model.NextAction(ctx, task, session, plan, steps)
+	tools := e.listToolInfo()
+	memory := e.recallMemory(ctx, task, session)
+	action, err := e.Model.NextAction(ctx, task, session, plan, steps, memory, tools)
 	if err != nil {
 		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
 	}
@@ -174,6 +185,109 @@ func (e Engine) executeIteration(ctx context.Context, task domain.Task, session 
 	}
 
 	return action, observation, verification, nil
+}
+
+func (e Engine) recallMemory(ctx context.Context, task domain.Task, session domain.Session) []domain.MemoryEntry {
+	const recallLimit = 10
+
+	queries := []domain.RecallQuery{
+		{SessionID: session.ID, Scope: memorypolicy.ScopeSession, Type: memorypolicy.TypeFact, Limit: recallLimit},
+		{SessionID: session.ID, Scope: memorypolicy.ScopeSession, Type: memorypolicy.TypeSummary, Limit: recallLimit},
+		{SessionID: session.ID, Scope: memorypolicy.ScopeProject, Type: memorypolicy.TypeFact, Limit: recallLimit},
+		{SessionID: session.ID, Scope: memorypolicy.ScopeProject, Type: memorypolicy.TypeSummary, Limit: recallLimit},
+	}
+
+	combined := make([]domain.MemoryEntry, 0, recallLimit)
+	seen := map[string]struct{}{}
+	for _, query := range queries {
+		entries, err := e.Memory.Recall(ctx, query)
+		if err != nil {
+			log.Printf("runtime: memory recall failed: %v", err)
+			return nil
+		}
+		for _, entry := range entries {
+			key := fmt.Sprintf("%d|%s|%s|%s|%s|%s", entry.ID, entry.SessionID, entry.Key, entry.Value, entry.Source, entry.Provenance)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			combined = append(combined, entry)
+		}
+	}
+
+	if len(combined) == 0 {
+		return nil
+	}
+
+	keywords := tokenizeKeywords(task.Description)
+	if len(keywords) == 0 {
+		if len(combined) > recallLimit {
+			return combined[:recallLimit]
+		}
+		return combined
+	}
+
+	type scoredEntry struct {
+		entry domain.MemoryEntry
+		score int
+	}
+	scored := make([]scoredEntry, 0, len(combined))
+	for _, entry := range combined {
+		haystack := strings.ToLower(strings.Join([]string{entry.Key, entry.Value, entry.Source, entry.Provenance}, " "))
+		score := 0
+		for _, keyword := range keywords {
+			if strings.Contains(haystack, keyword) {
+				score++
+			}
+		}
+		scored = append(scored, scoredEntry{entry: entry, score: score})
+	}
+
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	recalled := make([]domain.MemoryEntry, 0, recallLimit)
+	for _, item := range scored {
+		recalled = append(recalled, item.entry)
+		if len(recalled) == recallLimit {
+			break
+		}
+	}
+	return recalled
+}
+
+func tokenizeKeywords(text string) []string {
+	fields := strings.Fields(strings.ToLower(text))
+	if len(fields) == 0 {
+		return nil
+	}
+	keywords := make([]string, 0, len(fields))
+	seen := map[string]struct{}{}
+	for _, field := range fields {
+		trimmed := strings.Trim(field, " .,;:!?()[]{}\"'`")
+		if len(trimmed) < 3 {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		keywords = append(keywords, trimmed)
+	}
+	return keywords
+}
+
+func (e Engine) listToolInfo() []domain.ToolInfo {
+	provider, ok := e.Tools.(toolExecutorWithRegistry)
+	if !ok {
+		return nil
+	}
+	registry := provider.Registry()
+	if registry == nil {
+		return nil
+	}
+	return registry.ListToolInfo()
 }
 
 func (e Engine) recordStep(ctx context.Context, sessionID string, step domain.Step, observation domain.Observation) error {

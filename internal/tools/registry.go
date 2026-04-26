@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+
+	"zheng-harness/internal/domain"
 )
 
 // Registry stores built-in tool definitions.
@@ -64,4 +66,18 @@ func (r *Registry) List() []ToolDefinition {
 		return items[i].Name < items[j].Name
 	})
 	return items
+}
+
+// ListToolInfo returns prompt-facing tool definitions in stable name order.
+func (r *Registry) ListToolInfo() []domain.ToolInfo {
+	defs := r.List()
+	infos := make([]domain.ToolInfo, 0, len(defs))
+	for _, def := range defs {
+		infos = append(infos, domain.ToolInfo{
+			Name:        def.Name,
+			Description: def.Description,
+			Schema:      def.Schema,
+		})
+	}
+	return infos
 }

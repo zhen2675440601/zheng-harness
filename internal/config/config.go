@@ -42,6 +42,7 @@ type RuntimeSettings struct {
 	StepTimeout   time.Duration `json:"step_timeout"`
 	MemoryLimitMB int           `json:"memory_limit_mb"`
 	VerifyMode    string        `json:"verify_mode"`
+	AllowedCommands []string    `json:"allowed_commands"`
 }
 
 type fileConfig struct {
@@ -71,6 +72,7 @@ type runtimeFileConfig struct {
 	StepTimeout   *string `json:"step_timeout"`
 	MemoryLimitMB *int    `json:"memory_limit_mb"`
 	VerifyMode    *string `json:"verify_mode"`
+	AllowedCommands []string `json:"allowed_commands"`
 }
 
 // GetModel exposes the selected model through the provider-boundary contract.
@@ -305,6 +307,9 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 		if parsed.Runtime.VerifyMode != nil {
 			cfg.Runtime.VerifyMode = strings.ToLower(strings.TrimSpace(*parsed.Runtime.VerifyMode))
 		}
+		if parsed.Runtime.AllowedCommands != nil {
+			cfg.Runtime.AllowedCommands = normalizeCommandList(parsed.Runtime.AllowedCommands)
+		}
 	}
 
 	if parsed.Provider != nil || parsed.Model != nil || parsed.APIKey != nil || parsed.BaseURL != nil || parsed.MaxSteps != nil || parsed.StepTimeout != nil || parsed.MemoryLimitMB != nil || parsed.VerifyMode != nil {
@@ -374,6 +379,21 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 	}
 
 	return nil
+}
+
+func normalizeCommandList(commands []string) []string {
+	if commands == nil {
+		return nil
+	}
+	normalized := make([]string, 0, len(commands))
+	for _, command := range commands {
+		trimmed := strings.TrimSpace(command)
+		if trimmed == "" {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
 }
 
 func resolveConfigPath(args []string) (string, bool, error) {

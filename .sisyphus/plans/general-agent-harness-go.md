@@ -125,9 +125,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - External: `https://martinfowler.com/articles/harness-engineering.html` - harness concepts to preserve in architecture
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] `go test ./...` runs without package-cycle errors after skeleton creation
-  - [ ] No package under `internal/domain` imports infrastructure-specific dependencies
-  - [ ] Directory layout exists exactly as specified
+  - [x] `go test ./...` runs without package-cycle errors after skeleton creation
+  - [x] No package under `internal/domain` imports infrastructure-specific dependencies
+  - [x] Directory layout exists exactly as specified
 
   **QA Scenarios** (MANDATORY - task incomplete without these):
   ```
@@ -163,9 +163,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - External: `https://hermes-agent.nousresearch.com/docs/` - general agent capability envelope
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] Unit tests cover fake-model + fake-tool deterministic loop inputs/outputs
-  - [ ] Internal core types use explicit structs rather than `map[string]any`
-  - [ ] Runtime packages compile against interfaces, not concrete adapters
+  - [x] Unit tests cover fake-model + fake-tool deterministic loop inputs/outputs
+  - [x] Internal core types use explicit structs rather than `map[string]any`
+  - [x] Runtime packages compile against interfaces, not concrete adapters
 
   **QA Scenarios**:
   ```
@@ -202,9 +202,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - External: `https://martinfowler.com/articles/harness-engineering.html` - verify/correct separation principles
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] Runtime exits with explicit terminal states: success, verification_failed, budget_exceeded, fatal_error, interrupted
-  - [ ] Every iteration records plan/action/observation/verification outcome
-  - [ ] Infinite loop protection is enforced by tested step/timeout limits
+  - [x] Runtime exits with explicit terminal states: success, verification_failed, budget_exceeded, fatal_error, interrupted
+  - [x] Every iteration records plan/action/observation/verification outcome
+  - [x] Infinite loop protection is enforced by tested step/timeout limits
 
   **QA Scenarios**:
   ```
@@ -240,9 +240,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - External: `https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents` - tool and harness safety patterns
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] Registry lists tool name, description, schema, timeout, safety level, and executor binding
-  - [ ] Unsafe command/file operations are rejected with explicit reasons
-  - [ ] Tool execution results are normalized for runtime consumption
+  - [x] Registry lists tool name, description, schema, timeout, safety level, and executor binding
+  - [x] Unsafe command/file operations are rejected with explicit reasons
+  - [x] Tool execution results are normalized for runtime consumption
 
   **QA Scenarios**:
   ```
@@ -277,9 +277,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - Local: `.sisyphus/drafts/general-agent-harness.md` - confirmed TDD decision
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] CI runs format/lint/test/race/coverage commands successfully
-  - [ ] Local contributor flow is documented by executable commands in repo scripts or README-equivalent
-  - [ ] Failing tests cause CI failure
+  - [x] CI runs format/lint/test/race/coverage commands successfully
+  - [x] Local contributor flow is documented by executable commands in repo scripts or README-equivalent
+  - [x] Failing tests cause CI failure
 
   **QA Scenarios**:
   ```
@@ -314,9 +314,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - External: `https://www.anthropic.com/engineering/building-effective-agents` - policy/context assembly guidance
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] Runtime can switch provider/model through config without domain changes
-  - [ ] Prompt/policy templates are versioned and loaded from a single controlled path
-  - [ ] Invalid config fails fast with actionable errors
+  - [x] Runtime can switch provider/model through config without domain changes
+  - [x] Prompt/policy templates are versioned and loaded from a single controlled path
+  - [x] Invalid config fails fast with actionable errors
 
   **QA Scenarios**:
   ```
@@ -352,9 +352,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - External: `https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents` - long-running verification patterns
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] Claimed success requires verification evidence
-  - [ ] Verification failures produce bounded corrective actions and retry counts
-  - [ ] Contradictions between agent claim and tool evidence are surfaced explicitly
+  - [x] Claimed success requires verification evidence
+  - [x] Verification failures produce bounded corrective actions and retry counts
+  - [x] Contradictions between agent claim and tool evidence are surfaced explicitly
 
   **QA Scenarios**:
   ```
@@ -389,9 +389,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - External: `https://hermes-agent.nousresearch.com/docs/` - persistent memory inspiration, but MVP deliberately reduced in scope
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] Session resume works from SQLite-backed persisted state
-  - [ ] Memory entries are inspectable with scope/type/source/confidence
-  - [ ] Storage behavior is covered by tests for create/read/update/resume flows
+  - [x] Session resume works from SQLite-backed persisted state
+  - [x] Memory entries are inspectable with scope/type/source/confidence
+  - [x] Storage behavior is covered by tests for create/read/update/resume flows
 
   **QA Scenarios**:
   ```
@@ -426,10 +426,10 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - Local: `.sisyphus/drafts/general-agent-harness.md` - CLI-only decision
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] `run` starts a task and returns a session identifier
-  - [ ] `resume` resumes a persisted session successfully
-  - [ ] `inspect` shows session status, terminal state, and key memory/step summaries
-  - [ ] Interrupt handling persists recoverable state before exit
+  - [x] `run` starts a task and returns a session identifier
+  - [x] `resume` resumes a persisted session successfully
+  - [x] `inspect` shows session status, terminal state, and key memory/step summaries
+  - [x] Interrupt handling persists recoverable state before exit
 
   **QA Scenarios**:
   ```
@@ -464,9 +464,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - External: `https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents` - reliability and harness evaluation mindset
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] At least one benchmark exists for success path, verification failure, resume path, and unsafe-tool rejection
-  - [ ] Replay fixtures can be executed in CI
-  - [ ] Regressions fail deterministically when reliability guarantees break
+  - [x] At least one benchmark exists for success path, verification failure, resume path, and unsafe-tool rejection
+  - [x] Replay fixtures can be executed in CI
+  - [x] Regressions fail deterministically when reliability guarantees break
 
   **QA Scenarios**:
   ```
@@ -502,9 +502,9 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
   - External: `https://martinfowler.com/articles/harness-engineering.html` - conceptual framing
 
   **Acceptance Criteria** (agent-executable only):
-  - [ ] ADRs exist for the major MVP decisions
-  - [ ] A new contributor can follow documented commands to run tests and start the CLI agent
-  - [ ] Documentation explicitly states what is out of scope for v1
+  - [x] ADRs exist for the major MVP decisions
+  - [x] A new contributor can follow documented commands to run tests and start the CLI agent
+  - [x] Documentation explicitly states what is out of scope for v1
 
   **QA Scenarios**:
   ```
@@ -527,10 +527,10 @@ Wave 3: reliability/benchmarks/CLI polish (`7, 10, 11`)
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - Prefer one commit per numbered task when the task creates a coherent verification boundary

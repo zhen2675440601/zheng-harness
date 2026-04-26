@@ -9,6 +9,13 @@ type ToolCall struct {
 	Timeout time.Duration
 }
 
+// ToolInfo is the prompt-facing subset of a tool definition.
+type ToolInfo struct {
+	Name        string
+	Description string
+	Schema      string
+}
+
 // ToolResult is the normalized outcome returned by a tool executor.
 type ToolResult struct {
 	ToolName string

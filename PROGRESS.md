@@ -2,9 +2,11 @@
 
 ## 项目概述
 
-基于 Harness Engineering 思想实现的通用 Coding Agent Go MVP。
+基于 Harness Engineering 思想实现的通用 Agent Harness Go MVP。
 
 ## 当前进度
+
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 📋 计划已就绪**
 
 **已完成 T1-T11 (11/11 核心任务) + 后续功能**
 
@@ -27,7 +29,7 @@
 - **文件**: `internal/llm/dashscope.go`
 - **说明**: 实现真正的 HTTP API 调用，连接阿里百炼 DashScope
 - **状态**: ✅ 完成
-- **测试**: API 调用成功
+- **测试**: 单元测试与适配链路验证通过（实网调用依赖有效 API Key）
 
 #### 2. 配置文件支持
 - **文件**: `internal/config/config.go`
@@ -36,7 +38,7 @@
 
 #### 3. 多厂商 API 配置
 - **文件**: `internal/config/config.go`, `zheng.json`
-- **说明**: 支持在配置文件中配置多�� provider，可动态切换
+- **说明**: 支持在配置文件中配置多个 provider，可动态切换
 - **配置格式**:
   ```json
   {
@@ -76,6 +78,13 @@
 - **问题**: CLI 指定不存在的 provider 时，系统自动创建空 provider 导致验证通过
 - **解决**: 修改 `upsertSelectedProvider` 和 Load 函数，不再自动创建新 provider
 
+### 5. Provider 与验证器运行时接线不一致
+- **问题**: CLI 早期仅对 DashScope 使用真实 provider，且默认总是使用 `FakeVerifier`，导致 `verify_mode` 行为不完整
+- **解决**:
+  - `cmd/agent/cli.go` 改为对所有受支持 provider 统一走 `llm.NewProvider + runtime.NewModelAdapter`
+  - 新增 `newVerifierFromConfig`，按 `verify_mode` 选择 verifier（off/standard/strict）
+  - 为 run/resume/inspect 补齐 `--verify-mode` 等配置相关 flag 兼容
+
 ## 技术栈
 
 - **语言**: Go 1.26.0
@@ -106,7 +115,7 @@ zheng-harness/
 
 ## 快速开始
 
-### 1. 安装 Go 1.26+
+### 1. 安装 Go 1.26.0
 下载地址: https://go.dev/dl/
 
 ### 2. 克隆项目
@@ -148,6 +157,8 @@ go run ./cmd/agent run --task "hello" --provider openai
 go run ./cmd/agent run --task "hello" --provider deepseek
 ```
 
+说明：`openai` / `anthropic` 当前为 stub provider（用于边界与流程验证），`dashscope` 为真实 HTTP 适配实现。
+
 ## Git 操作记录
 
 ### 初始化 (已在其他主机完成)
@@ -159,20 +170,47 @@ git remote add origin https://github.com/zhen2675440601/zheng-harness.git
 git push -u origin main
 ```
 
-### 后续提交 (本次)
+### Phase 1-2 提交历史
 ```bash
-# 添加新功能
+# 多 provider LLM 支持与 DashScope 集成
 git add -A
 git commit -m "feat: add multi-provider LLM support with DashScope integration"
 git push origin main
 ```
 
-## 下一步建议
+## 下一步执行入口
 
-1. **添加更多工具** - 让 Agent 能执行文件读写、命令等操作
-2. **启用验证器** - 设置 `verify_mode: "standard"` 让 Agent 自验证
-3. **扩展 Provider** - 添加更多 LLM provider 支持
-4. **测试覆盖** - 增加更多单元测试和集成测试
+**Phase 状态**: Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 📋 计划已就绪
+
+Phase 3 计划文件：`.sisyphus/plans/phase-3-general-task-protocol.md`
+
+### 跨机器继续开发
+
+在其他机器上继续 Phase 3 实施：
+
+1. **git 同步代码**
+   ```bash
+   git pull origin main
+   ```
+
+2. **本地配置设置**
+   - 复制 `zheng.example.json` 为 `zheng.json`
+   - 填入 API key 等敏感配置
+   - 确保 Go 1.26.0 已安装
+
+3. **查阅 Phase 3 计划**
+   - 打开 `.sisyphus/plans/phase-3-general-task-protocol.md`
+   - 从 Wave 1 Task 1 开始实施
+
+### Phase 3 核心目标
+
+将当前 harness 从 coding-leaning agent loop 演进为**通用任务协议运行时**，支持：
+- 通用任务分类与协议元数据
+- 扩展的动作词汇（request_input, complete 等）
+- 任务感知验证合约（research, file_workflow 等非 coding 任务）
+- 静态任务类型注册表（无插件系统）
+
+**至少两个非 coding 任务类别的端到端证明**：research 和 file_workflow。
 
 ## 注意事项
 
@@ -184,4 +222,4 @@ git push origin main
 
 **最后更新**: 2026-04-26
 **Go 版本**: 1.26.0
-**测试状态**: 全部通过 ✅
+**测试状态**: `go test ./...` / `go test -cover ./...` / `go build ./...` / `go test -race ./...` 已通过

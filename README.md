@@ -1,26 +1,14 @@
 # zheng-harness
 
-基于 Harness Engineering 思想实现的通用 Coding Agent Go MVP。
+基于 Harness Engineering 思想实现的通用 Agent Harness Go MVP。
 
 v1 聚焦 **CLI-first、单进程、单代理、可验证、可恢复、可检查持久记忆**，避免过早平台化。
 
 ## 当前进度
 
-**已完成 11/11 个核心任务 (100%)**
+**Phase 1 & 2: 已完成 | Phase 3: 计划已就绪**
 
-| 状态 | 任务 | 说明 |
-|------|------|------|
-| ✅ | T1: Bootstrap Go 项目骨架 | Go 模块、目录结构、架构边界 |
-| ✅ | T2: 定义核心域契约 | 域类型、端口接口、fake 适配器 |
-| ✅ | T3: 实现 plan-execute-verify 循环 | 多步迭代、预算限制、终止状态、自纠正 |
-| ✅ | T4: 构建工具注册表 | 工具定义、注册表、执行器、安全策略 |
-| ✅ | T5: 建立 TDD/CI 基线 | GitHub Actions、Makefile |
-| ✅ | T6: 配置与模型适配器边界 | Config、Provider 接口、Prompt 版本化 |
-| ✅ | T7: 实现验证与自纠正系统 | 验证检查、失败分类、纠正指令 |
-| ✅ | T8: SQLite 持久化 | Session/Event/Memory 存储 |
-| ✅ | T9: CLI 命令 | run / resume / inspect |
-| ✅ | T10: 基准测试与回放 | 回归测试套件 |
-| ✅ | T11: 文档与 ADR | 架构决策记录、使用文档、contributor workflow |
+核心任务 T1-T11 已全部完成。详细进度请见 [PROGRESS.md](PROGRESS.md)。Phase 3 计划见 [.sisyphus/plans/phase-3-general-task-protocol.md](.sisyphus/plans/phase-3-general-task-protocol.md)。
 
 ## 快速开始
 
@@ -33,7 +21,7 @@ cd zheng-harness
 
 ### 2. 安装依赖环境
 
-- Go 1.22+
+- Go 1.26.0
 - 本地可写文件系统（用于 SQLite 数据库文件）
 
 ### 3. 运行测试
@@ -95,20 +83,33 @@ go run ./cmd/agent run \
 
 ```json
 {
-  "provider": "dashscope",
-  "model": "qwen3.6-plus",
-  "api_key": "sk-sp-xxx",
-  "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1",
-  "max_steps": 8,
-  "step_timeout": "30s",
-  "memory_limit_mb": 256,
-  "verify_mode": "standard"
+  "default_provider": "dashscope",
+  "providers": {
+    "dashscope": {
+      "type": "dashscope",
+      "model": "qwen3.6-plus",
+      "api_key": "sk-sp-xxx",
+      "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
+    },
+    "openai": {
+      "type": "openai",
+      "model": "gpt-4.1-mini",
+      "api_key": "sk-xxx",
+      "base_url": "https://api.openai.com/v1"
+    }
+  },
+  "runtime": {
+    "max_steps": 8,
+    "step_timeout": "30s",
+    "memory_limit_mb": 256,
+    "verify_mode": "standard"
+  }
 }
 ```
 
 仓库提供了可复制修改的示例文件：[`zheng.example.json`](zheng.example.json)。
 
-配置优先级为：**CLI flags > 配置文件 > 环境变量 > 默认值**。
+配置优先级为：**CLI flags > 环境变量 > 配置文件 > 默认值**。
 
 ### 恢复会话
 
@@ -161,7 +162,7 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 
 ## 技术栈
 
-- **语言**：Go 1.22+
+- **语言**：Go 1.26.0
 - **持久化**：SQLite（`modernc.org/sqlite`，纯 Go）
 - **测试**：Go testing framework + TDD
 - **CI**：GitHub Actions

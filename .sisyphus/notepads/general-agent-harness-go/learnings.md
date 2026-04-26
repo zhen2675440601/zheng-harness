@@ -16,3 +16,11 @@
 - Task 11 documentation works best when it mirrors code-level contracts directly: `cmd/agent/cli.go` defines the exact `run`/`resume`/`inspect` flags and `internal/domain/ports.go` provides the clearest architecture summary for new contributors.
 - F4 scope-fidelity audit confirmed v1 boundaries are still intact in code: no multi-agent orchestration, plugin loading, web server/UI endpoints, gateway integrations, vector DB primitives, or knowledge-graph structures under `internal/` and `cmd/`; `go func` matches are limited to CLI signal cancellation plumbing and test scaffolding.
 - `SQLiteMemoryStore.Remember` is part of the durable-memory contract, so runtime observations must be converted into validated session-scoped `memory_entries` rows; session integration tests need to count the implicit persisted observation rather than treating `Remember` as a no-op.
+- Config-file support can stay dependency-light by decoding a compact JSON overlay struct with pointer fields, then layering it between environment values and CLI flags so explicit file zero-values remain distinguishable from omitted fields.
+- Runtime-facing `domain.Model` integration can stay infrastructure-neutral by wrapping `llm.Provider` in `internal/runtime` and moving prompt payload builders under `internal/config/prompts`, so CLI wiring selects a real provider without changing domain ports.
+
+- Multi-provider config can remain backward compatible by treating legacy top-level provider/model/api_key/base_url fields as a single named provider while normalizing new default_provider + providers + runtime JSON into one runtime-selected Config view exposed through accessor methods.
+## 2026-04-26
+- grep_search now parses ToolCall.Input as up to four lines: pattern, regex flags, output mode, include glob.
+- Invalid regex/output mode is surfaced via ToolResult.Error to keep tool execution non-fatal.
+- Added focused tests across runtime, memory, prompts, and adapters; adapters package coverage now exceeds target, but runtime package remains below requested 70% despite added behavioral tests.

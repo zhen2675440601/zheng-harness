@@ -18,6 +18,8 @@ import (
 	"zheng-harness/internal/llm"
 	"zheng-harness/internal/runtime"
 	"zheng-harness/internal/store"
+	"zheng-harness/internal/tools"
+	"zheng-harness/internal/verify"
 )
 
 const defaultDBPath = "./agent.db"
@@ -30,7 +32,7 @@ type cliApp struct {
 	newMemory    func(string) (*store.SQLiteMemoryStore, error)
 	newExecutor  func() domain.ToolExecutor
 	newModel     func() domain.Model
-	newVerifier  func() domain.Verifier
+	newVerifier  func(domain.ToolExecutor) domain.Verifier
 	notifySignal func(chan<- os.Signal, ...os.Signal)
 	stopSignal   func(chan<- os.Signal)
 	now          func() time.Time
@@ -59,15 +61,33 @@ type inspectJSONOutput struct {
 // These are the only flags that should be passed to config.Load.
 // Other flags like --task, --session, --db, --json are run/resume/inspect specific.
 var configFlagNames = map[string]bool{
-	"config":         true,
-	"model":          true,
-	"provider":       true,
-	"max-steps":      true,
-	"step-timeout":   true,
+	"config":          true,
+	"model":           true,
+	"provider":        true,
+	"max-steps":       true,
+	"step-timeout":    true,
 	"memory-limit-mb": true,
-	"verify-mode":    true,
-	"api-key":        true,
-	"base-url":       true,
+	"verify-mode":     true,
+	"api-key":         true,
+	"base-url":        true,
+}
+
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	if s == nil {
+		return ""
+	}
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSliceFlag) Set(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return errors.New("allow-command must not be empty")
+	}
+	*s = append(*s, trimmed)
+	return nil
 }
 
 // filterConfigArgs extracts only the config-related flags from args.
@@ -112,7 +132,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	modelFactory := func() domain.Model {
 		return &FakeModel{}
 	}
-	if cfg.GetProviderType() == config.ProviderDashScope {
+	if cfg.GetProviderType() != "" && cfg.GetAPIKey() != "" {
 		provider, err := llm.NewProvider(cfg)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, err)
@@ -134,17 +154,36 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return store.NewMemoryStore(dbPath)
 		},
 		newExecutor: func() domain.ToolExecutor {
-			return FakeToolExecutor{}
+			executor, err := tools.NewExecutor(".",
+				tools.WithAllowedCommands(cfg.Runtime.AllowedCommands),
+			)
+			if err != nil {
+				return FakeToolExecutor{}
+			}
+			return executor
 		},
 		newModel: modelFactory,
-		newVerifier: func() domain.Verifier {
-			return FakeVerifier{}
+		newVerifier: func(executor domain.ToolExecutor) domain.Verifier {
+			return newVerifierFromConfig(cfg, executor)
 		},
 		notifySignal: signal.Notify,
 		stopSignal:   signal.Stop,
 		now:          time.Now,
 	}
 	return app.run(ctx, args)
+}
+
+func newVerifierFromConfig(cfg config.Config, executor domain.ToolExecutor) domain.Verifier {
+	switch cfg.Runtime.VerifyMode {
+	case config.VerifyModeOff:
+		return FakeVerifier{}
+	case config.VerifyModeStandard:
+		return verify.NewCommandVerifier(executor)
+	case config.VerifyModeStrict:
+		return verify.NewCommandVerifier(executor)
+	default:
+		return verify.NewCommandVerifier(executor)
+	}
 }
 
 func (a cliApp) run(ctx context.Context, args []string) int {
@@ -189,6 +228,11 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	_ = fs.String("model", "", "model (unused in subcommand)")
 	_ = fs.String("api-key", "", "API key (unused in subcommand)")
 	_ = fs.String("base-url", "", "base URL (unused in subcommand)")
+	_ = fs.String("step-timeout", "", "step timeout (unused in subcommand)")
+	_ = fs.Int("memory-limit-mb", 0, "memory limit mb (unused in subcommand)")
+	_ = fs.String("verify-mode", "", "verify mode (unused in subcommand)")
+	var allowCommands stringSliceFlag
+	fs.Var(&allowCommands, "allow-command", "additional allowed command (repeatable)")
 	taskInput := fs.String("task", "", "task description")
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
 	maxSteps := fs.Int("max-steps", a.defaultMaxSteps(), "maximum runtime steps")
@@ -201,6 +245,9 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	}
 	if *maxSteps <= 0 {
 		return errors.New("run requires --max-steps > 0")
+	}
+	if len(allowCommands) > 0 {
+		a = a.withExtraAllowedCommands([]string(allowCommands))
 	}
 
 	now := a.now()
@@ -222,12 +269,13 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 		return fmt.Errorf("save initial session: %w", err)
 	}
 
+	executor := a.newExecutor()
 	engine := runtime.Engine{
 		Model:          a.newModel(),
-		Tools:          a.newExecutor(),
+		Tools:          executor,
 		Memory:         memoryStore,
 		Sessions:       aliasStore,
-		Verifier:       a.newVerifier(),
+		Verifier:       a.newVerifier(executor),
 		MaxSteps:       *maxSteps,
 		MaxRetries:     *maxSteps,
 		SessionTimeout: a.sessionTimeout(*maxSteps),
@@ -278,6 +326,11 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 	_ = fs.String("model", "", "model (unused in subcommand)")
 	_ = fs.String("api-key", "", "API key (unused in subcommand)")
 	_ = fs.String("base-url", "", "base URL (unused in subcommand)")
+	_ = fs.String("step-timeout", "", "step timeout (unused in subcommand)")
+	_ = fs.Int("memory-limit-mb", 0, "memory limit mb (unused in subcommand)")
+	_ = fs.String("verify-mode", "", "verify mode (unused in subcommand)")
+	var allowCommands stringSliceFlag
+	fs.Var(&allowCommands, "allow-command", "additional allowed command (repeatable)")
 	sessionID := fs.String("session", "", "session identifier")
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
 	maxSteps := fs.Int("max-steps", a.defaultMaxSteps(), "maximum runtime steps")
@@ -286,6 +339,9 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 	}
 	if strings.TrimSpace(*sessionID) == "" {
 		return errors.New("resume requires --session")
+	}
+	if len(allowCommands) > 0 {
+		a = a.withExtraAllowedCommands([]string(allowCommands))
 	}
 	if *maxSteps <= 0 {
 		return errors.New("resume requires --max-steps > 0")
@@ -307,12 +363,13 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 		return nil
 	}
 
+	executor := a.newExecutor()
 	engine := runtime.Engine{
 		Model:          a.newModel(),
-		Tools:          a.newExecutor(),
+		Tools:          executor,
 		Memory:         memoryStore,
 		Sessions:       newSessionAliasStore(sessionStore, *sessionID, ""),
-		Verifier:       a.newVerifier(),
+		Verifier:       a.newVerifier(executor),
 		MaxSteps:       *maxSteps,
 		MaxRetries:     *maxSteps,
 		SessionTimeout: a.sessionTimeout(*maxSteps),
@@ -363,6 +420,9 @@ func (a cliApp) inspectCommand(ctx context.Context, args []string) error {
 	_ = fs.String("model", "", "model (unused in subcommand)")
 	_ = fs.String("api-key", "", "API key (unused in subcommand)")
 	_ = fs.String("base-url", "", "base URL (unused in subcommand)")
+	_ = fs.String("step-timeout", "", "step timeout (unused in subcommand)")
+	_ = fs.Int("memory-limit-mb", 0, "memory limit mb (unused in subcommand)")
+	_ = fs.String("verify-mode", "", "verify mode (unused in subcommand)")
 	sessionID := fs.String("session", "", "session identifier")
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
 	jsonMode := fs.Bool("json", false, "emit machine-readable JSON")
@@ -402,6 +462,20 @@ func (a cliApp) openRuntimeDeps(dbPath string) (*store.SQLiteSessionStore, *stor
 		_ = memoryStore.Close()
 	}
 	return sessionStore, memoryStore, cleanup, nil
+}
+
+func (a cliApp) withExtraAllowedCommands(commands []string) cliApp {
+	a.newExecutor = func() domain.ToolExecutor {
+		executor, err := tools.NewExecutor(".",
+			tools.WithAllowedCommands(a.cfg.Runtime.AllowedCommands),
+			tools.WithExtraAllowedCommands(commands),
+		)
+		if err != nil {
+			return FakeToolExecutor{}
+		}
+		return executor
+	}
+	return a
 }
 
 func (a cliApp) defaultMaxSteps() int {

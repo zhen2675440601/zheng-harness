@@ -9,10 +9,13 @@ import (
 )
 
 type FakeModel struct {
-	Delay time.Duration
+	Delay      time.Duration
+	LastTools  []domain.ToolInfo
+	LastMemory []domain.MemoryEntry
 }
 
-func (m *FakeModel) CreatePlan(_ context.Context, task domain.Task, _ domain.Session) (domain.Plan, error) {
+func (m *FakeModel) CreatePlan(_ context.Context, task domain.Task, _ domain.Session, memory []domain.MemoryEntry) (domain.Plan, error) {
+	m.LastMemory = append([]domain.MemoryEntry(nil), memory...)
 	return domain.Plan{
 		ID:        "plan-" + task.ID,
 		TaskID:    task.ID,
@@ -22,7 +25,9 @@ func (m *FakeModel) CreatePlan(_ context.Context, task domain.Task, _ domain.Ses
 	}, nil
 }
 
-func (m *FakeModel) NextAction(ctx context.Context, task domain.Task, _ domain.Session, _ domain.Plan, _ []domain.Step) (domain.Action, error) {
+func (m *FakeModel) NextAction(ctx context.Context, task domain.Task, _ domain.Session, _ domain.Plan, _ []domain.Step, memory []domain.MemoryEntry, tools []domain.ToolInfo) (domain.Action, error) {
+	m.LastMemory = append([]domain.MemoryEntry(nil), memory...)
+	m.LastTools = append([]domain.ToolInfo(nil), tools...)
 	if err := waitForDelay(ctx, m.Delay); err != nil {
 		return domain.Action{}, err
 	}

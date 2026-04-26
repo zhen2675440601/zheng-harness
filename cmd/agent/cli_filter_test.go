@@ -47,7 +47,7 @@ func TestFilterConfigArgs(t *testing.T) {
 		},
 		{
 			name:     "keeps all config flags",
-			args:     []string{"--config", "./config.json", "--provider", "dashscope", "--api-key", "sk-xxx", "--base-url", "https://api.example.com", "--max-steps", "10", "--step-timeout", "30s", "--memory-limit-mb", "256", "--verify-mode", "standard", "--model", "qwen3"},
+			args:     []string{"--config", "./config.json", "--provider", "dashscope", "--api-key", "sk-xxx", "--base-url", "https://api.example.com", "--max-steps", "10", "--step-timeout", "30s", "--memory-limit-mb", "256", "--verify-mode", "standard", "--model", "qwen3", "--allow-command", "npm"},
 			expected: []string{"--config", "./config.json", "--provider", "dashscope", "--api-key", "sk-xxx", "--base-url", "https://api.example.com", "--max-steps", "10", "--step-timeout", "30s", "--memory-limit-mb", "256", "--verify-mode", "standard", "--model", "qwen3"},
 		},
 		{

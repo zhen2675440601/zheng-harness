@@ -51,3 +51,97 @@ func TestVerifierRejectsFalseSuccess(t *testing.T) {
 		t.Fatalf("reason = %q, want correction instruction", result.Reason)
 	}
 }
+
+func TestVerifierAcceptsStructuredCommandEvidence(t *testing.T) {
+	t.Parallel()
+
+	v := verify.NewVerifier(verify.DefaultPolicy())
+	result, err := v.Verify(context.Background(), domain.Task{ID: "task-3"}, domain.Session{ID: "session-3"}, domain.Plan{ID: "plan-3"}, nil, domain.Observation{
+		Summary:       "commands executed",
+		FinalResponse: "done",
+		ToolResult: &domain.ToolResult{Output: strings.Join([]string{
+			"COMMAND: go test ./...",
+			"EXIT_CODE: 0",
+			"OUTPUT_BEGIN",
+			"ok zheng-harness/internal/tools",
+			"OUTPUT_END",
+			"COMMAND: go build ./...",
+			"EXIT_CODE: 0",
+			"OUTPUT_BEGIN",
+			"",
+			"OUTPUT_END",
+			"COMMAND: go vet ./...",
+			"EXIT_CODE: 0",
+			"OUTPUT_BEGIN",
+			"",
+			"OUTPUT_END",
+		}, "\n")},
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("expected verification success, got %+v", result)
+	}
+}
+
+func TestVerifierRejectsFailedStructuredCommandEvidence(t *testing.T) {
+	t.Parallel()
+
+	v := verify.NewVerifier(verify.DefaultPolicy())
+	result, err := v.Verify(context.Background(), domain.Task{ID: "task-4"}, domain.Session{ID: "session-4"}, domain.Plan{ID: "plan-4"}, nil, domain.Observation{
+		Summary:       "commands executed",
+		FinalResponse: "done",
+		ToolResult: &domain.ToolResult{Output: strings.Join([]string{
+			"COMMAND: go test ./...",
+			"EXIT_CODE: 1",
+			"OUTPUT_BEGIN",
+			"FAIL zheng-harness/internal/tools",
+			"OUTPUT_END",
+			"COMMAND: go build ./...",
+			"EXIT_CODE: 0",
+			"OUTPUT_BEGIN",
+			"",
+			"OUTPUT_END",
+			"COMMAND: go vet ./...",
+			"EXIT_CODE: 0",
+			"OUTPUT_BEGIN",
+			"",
+			"OUTPUT_END",
+		}, "\n")},
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("expected verification failure, got %+v", result)
+	}
+}
+
+func TestVerifierDoesNotFallbackAcrossUnrelatedStructuredExitCodes(t *testing.T) {
+	t.Parallel()
+
+	v := verify.NewVerifier(verify.Policy{MaxFailures: 2, Checks: []verify.CheckKind{verify.CheckKindTest}})
+	result, err := v.Verify(context.Background(), domain.Task{ID: "task-5"}, domain.Session{ID: "session-5"}, domain.Plan{ID: "plan-5"}, nil, domain.Observation{
+		Summary:       "commands executed",
+		FinalResponse: "done",
+		ToolResult: &domain.ToolResult{Output: strings.Join([]string{
+			"COMMAND: go test ./...",
+			"EXIT_CODE: 1",
+			"OUTPUT_BEGIN",
+			"FAIL",
+			"OUTPUT_END",
+			"COMMAND: go build ./...",
+			"EXIT_CODE: 0",
+			"OUTPUT_BEGIN",
+			"",
+			"OUTPUT_END",
+		}, "\n")},
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("expected verification failure when go test exit code is non-zero, got %+v", result)
+	}
+}

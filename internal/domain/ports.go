@@ -4,8 +4,8 @@ import "context"
 
 // Model owns planning and action selection for a task/session.
 type Model interface {
-	CreatePlan(ctx context.Context, task Task, session Session) (Plan, error)
-	NextAction(ctx context.Context, task Task, session Session, plan Plan, steps []Step) (Action, error)
+	CreatePlan(ctx context.Context, task Task, session Session, memory []MemoryEntry) (Plan, error)
+	NextAction(ctx context.Context, task Task, session Session, plan Plan, steps []Step, memory []MemoryEntry, tools []ToolInfo) (Action, error)
 	Observe(ctx context.Context, task Task, session Session, plan Plan, action Action, result *ToolResult) (Observation, error)
 }
 
@@ -17,6 +17,7 @@ type ToolExecutor interface {
 // MemoryStore persists inspectable observations for later reuse.
 type MemoryStore interface {
 	Remember(ctx context.Context, sessionID string, observation Observation) error
+	Recall(ctx context.Context, query RecallQuery) ([]MemoryEntry, error)
 }
 
 // SessionStore persists sessions, plans, and step history.
