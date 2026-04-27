@@ -4,46 +4,26 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
+
+	"zheng-harness/internal/domain"
 )
 
-type Scope string
+type Scope = domain.MemoryScope
+type Type = domain.MemoryType
+type Entry = domain.MemoryEntry
+type Query = domain.RecallQuery
 
 const (
-	ScopeSession Scope = "session"
-	ScopeProject Scope = "project"
-	ScopeGlobal  Scope = "global"
+	ScopeSession Scope = domain.MemoryScopeSession
+	ScopeProject Scope = domain.MemoryScopeProject
+	ScopeGlobal  Scope = domain.MemoryScopeGlobal
 )
-
-type Type string
 
 const (
-	TypePreference Type = "preference"
-	TypeFact       Type = "fact"
-	TypeSummary    Type = "summary"
+	TypePreference Type = domain.MemoryTypePreference
+	TypeFact       Type = domain.MemoryTypeFact
+	TypeSummary    Type = domain.MemoryTypeSummary
 )
-
-type Entry struct {
-	ID         int64
-	SessionID  string
-	Scope      Scope
-	Type       Type
-	Key        string
-	Value      string
-	Source     string
-	Confidence int
-	Provenance string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-}
-
-type Query struct {
-	SessionID string
-	Scope     Scope
-	Type      Type
-	Key       string
-	Limit     int
-}
 
 var (
 	ErrInvalidEntry      = errors.New("memory entry failed validation")
@@ -61,8 +41,8 @@ func ValidateEntry(entry Entry) error {
 	if strings.TrimSpace(entry.Key) == "" {
 		return fmt.Errorf("%w: key must not be empty", ErrInvalidEntry)
 	}
-	if strings.TrimSpace(entry.Value) == "" {
-		return fmt.Errorf("%w: value must not be empty", ErrInvalidEntry)
+	if strings.TrimSpace(entry.Content) == "" {
+		return fmt.Errorf("%w: content must not be empty", ErrInvalidEntry)
 	}
 	if strings.TrimSpace(entry.Source) == "" {
 		return fmt.Errorf("%w: source must not be empty", ErrInvalidEntry)

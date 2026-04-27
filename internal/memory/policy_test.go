@@ -10,8 +10,8 @@ func TestValidateEntryAcceptsProjectAndSessionScopes(t *testing.T) {
 	t.Parallel()
 
 	entries := []Entry{
-		{SessionID: "session-1", Scope: ScopeSession, Type: TypeFact, Key: "repo", Value: "uses sqlite", Source: "step-1", Confidence: 90},
-		{Scope: ScopeProject, Type: TypeSummary, Key: "style", Value: "concise", Source: "step-2", Confidence: 50},
+		{SessionID: "session-1", Scope: ScopeSession, Type: TypeFact, Key: "repo", Content: "uses sqlite", Source: "step-1", Confidence: 90},
+		{Scope: ScopeProject, Type: TypeSummary, Key: "style", Content: "concise", Source: "step-2", Confidence: 50},
 	}
 
 	for _, entry := range entries {
@@ -33,13 +33,13 @@ func TestValidateEntryRejectsInvalidFields(t *testing.T) {
 		entry Entry
 		want string
 	}{
-		{name: "invalid scope", entry: Entry{Scope: Scope("bad"), Type: TypeFact, Key: "k", Value: "v", Source: "s", Confidence: 1}, want: "invalid scope"},
-		{name: "invalid type", entry: Entry{Scope: ScopeProject, Type: Type("bad"), Key: "k", Value: "v", Source: "s", Confidence: 1}, want: "invalid type"},
-		{name: "empty key", entry: Entry{Scope: ScopeProject, Type: TypeFact, Value: "v", Source: "s", Confidence: 1}, want: "key must not be empty"},
-		{name: "empty value", entry: Entry{Scope: ScopeProject, Type: TypeFact, Key: "k", Source: "s", Confidence: 1}, want: "value must not be empty"},
-		{name: "empty source", entry: Entry{Scope: ScopeProject, Type: TypeFact, Key: "k", Value: "v", Confidence: 1}, want: "source must not be empty"},
-		{name: "bad confidence", entry: Entry{Scope: ScopeProject, Type: TypeFact, Key: "k", Value: "v", Source: "s", Confidence: 101}, want: "confidence must be between 0 and 100"},
-		{name: "missing session id", entry: Entry{Scope: ScopeSession, Type: TypeFact, Key: "k", Value: "v", Source: "s", Confidence: 1}, want: "session scope requires session id"},
+		{name: "invalid scope", entry: Entry{Scope: Scope("bad"), Type: TypeFact, Key: "k", Content: "v", Source: "s", Confidence: 1}, want: "invalid scope"},
+		{name: "invalid type", entry: Entry{Scope: ScopeProject, Type: Type("bad"), Key: "k", Content: "v", Source: "s", Confidence: 1}, want: "invalid type"},
+		{name: "empty key", entry: Entry{Scope: ScopeProject, Type: TypeFact, Content: "v", Source: "s", Confidence: 1}, want: "key must not be empty"},
+		{name: "empty content", entry: Entry{Scope: ScopeProject, Type: TypeFact, Key: "k", Source: "s", Confidence: 1}, want: "content must not be empty"},
+		{name: "empty source", entry: Entry{Scope: ScopeProject, Type: TypeFact, Key: "k", Content: "v", Confidence: 1}, want: "source must not be empty"},
+		{name: "bad confidence", entry: Entry{Scope: ScopeProject, Type: TypeFact, Key: "k", Content: "v", Source: "s", Confidence: 101}, want: "confidence must be between 0 and 100"},
+		{name: "missing session id", entry: Entry{Scope: ScopeSession, Type: TypeFact, Key: "k", Content: "v", Source: "s", Confidence: 1}, want: "session scope requires session id"},
 	}
 
 	for _, tt := range tests {
@@ -57,7 +57,7 @@ func TestValidateEntryRejectsInvalidFields(t *testing.T) {
 func TestValidateEntryRejectsGlobalScopeWrite(t *testing.T) {
 	t.Parallel()
 
-	err := ValidateEntry(Entry{Scope: ScopeGlobal, Type: TypeFact, Key: "k", Value: "v", Source: "s", Confidence: 1})
+	err := ValidateEntry(Entry{Scope: ScopeGlobal, Type: TypeFact, Key: "k", Content: "v", Source: "s", Confidence: 1})
 	if !errors.Is(err, ErrGlobalScopeWrite) {
 		t.Fatalf("ValidateEntry() error = %v, want ErrGlobalScopeWrite", err)
 	}
