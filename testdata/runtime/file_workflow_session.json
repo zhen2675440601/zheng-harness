@@ -1,0 +1,81 @@
+{
+  "name": "file_workflow_path_replay",
+  "clock": "2026-04-27T11:15:00Z",
+  "task": {
+    "id": "fixture-file-workflow-task",
+    "description": "prepare a deterministic handoff artifact",
+    "goal": "verify expected file-state output",
+    "category": "file_workflow"
+  },
+  "engine": {
+    "max_steps": 2,
+    "max_retries": 1,
+    "session_timeout_ms": 60000
+  },
+  "store": {
+    "kind": "memory"
+  },
+  "tool": {
+    "kind": "fake"
+  },
+  "verifier": {
+    "kind": "task_aware"
+  },
+  "plans": [
+    {
+      "id": "fixture-file-workflow-plan-1",
+      "summary": "report deterministic file workflow completion"
+    }
+  ],
+  "actions": [
+    {
+      "type": "respond",
+      "summary": "confirm artifact state",
+      "response": "The requested handoff artifact is present with the expected completion marker."
+    }
+  ],
+  "tool_results": [],
+  "observations": [
+    {
+      "summary": "file workflow result recorded with explicit state",
+      "final_response": "The requested handoff artifact is present with the expected completion marker.",
+      "evidence": {
+        "file_workflow": {
+          "summary": "Handoff artifact and archive state verified.",
+          "expectations": [
+            {
+              "path": "handoff/report.txt",
+              "should_exist": true,
+              "required_contents": ["status: complete", "owner: runtime"]
+            },
+            {
+              "path": "handoff/archive.txt",
+              "should_exist": false,
+              "required_contents": []
+            }
+          ],
+          "results": [
+            {
+              "path": "handoff/report.txt",
+              "exists": true,
+              "content": "status: complete\nowner: runtime\n",
+              "error": ""
+            },
+            {
+              "path": "handoff/archive.txt",
+              "exists": false,
+              "content": "",
+              "error": ""
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "verifications": [
+    {
+      "passed": true,
+      "reason": "file workflow evidence satisfies expected conditions"
+    }
+  ]
+}

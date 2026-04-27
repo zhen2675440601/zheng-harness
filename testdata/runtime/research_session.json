@@ -1,0 +1,79 @@
+{
+  "name": "research_path_replay",
+  "clock": "2026-04-27T11:00:00Z",
+  "task": {
+    "id": "fixture-research-task",
+    "description": "research the protocol status",
+    "goal": "produce evidence-backed synthesis",
+    "category": "research"
+  },
+  "engine": {
+    "max_steps": 2,
+    "max_retries": 1,
+    "session_timeout_ms": 60000
+  },
+  "store": {
+    "kind": "memory"
+  },
+  "tool": {
+    "kind": "fake"
+  },
+  "verifier": {
+    "kind": "task_aware"
+  },
+  "plans": [
+    {
+      "id": "fixture-research-plan-1",
+      "summary": "synthesize deterministic protocol evidence"
+    }
+  ],
+  "actions": [
+    {
+      "type": "respond",
+      "summary": "deliver evidence-backed synthesis",
+      "response": "The protocol supports deterministic research tasks with inspectable evidence."
+    }
+  ],
+  "tool_results": [],
+  "observations": [
+    {
+      "summary": "research synthesis prepared with explicit sources",
+      "final_response": "The protocol supports deterministic research tasks with inspectable evidence.",
+      "evidence": {
+        "research": {
+          "conclusion": "All reviewed sources agree the protocol supports deterministic research tasks.",
+          "sources": [
+            {
+              "id": "src-1",
+              "kind": "plan",
+              "locator": ".sisyphus/plans/phase-3-general-task-protocol.md",
+              "excerpt": "At least two non-coding task categories have deterministic end-to-end tests proving runtime + verifier compatibility."
+            },
+            {
+              "id": "src-2",
+              "kind": "notepad",
+              "locator": ".sisyphus/notepads/phase-3-general-task-protocol/learnings.md",
+              "excerpt": "Non-coding verification benefits from a small typed evidence model attached to domain.Observation."
+            }
+          ],
+          "findings": [
+            {
+              "claim": "The protocol requires deterministic end-to-end proof for non-coding tasks.",
+              "supporting_source_ids": ["src-1"]
+            },
+            {
+              "claim": "Research verification is evidence-based rather than command-based.",
+              "supporting_source_ids": ["src-2"]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "verifications": [
+    {
+      "passed": true,
+      "reason": "research evidence is complete and consistent"
+    }
+  ]
+}
