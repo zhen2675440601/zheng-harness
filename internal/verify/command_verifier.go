@@ -26,7 +26,7 @@ func NewCommandVerifier(executor domain.ToolExecutor) *CommandVerifier {
 // Verify implements domain.Verifier.
 func (v *CommandVerifier) Verify(ctx context.Context, _ domain.Task, _ domain.Session, _ domain.Plan, _ []domain.Step, _ domain.Observation) (domain.VerificationResult, error) {
 	if v.executor == nil {
-		return domain.VerificationResult{Passed: false, Reason: "verification command not available"}, nil
+		return domain.VerificationResult{Passed: false, Status: domain.VerificationStatusFailed, Reason: "verification command not available"}, nil
 	}
 
 	commands := []string{"go test ./...", "go build ./...", "go vet ./..."}
@@ -36,28 +36,28 @@ func (v *CommandVerifier) Verify(ctx context.Context, _ domain.Task, _ domain.Se
 		result, err := v.runCommand(ctx, command)
 		if err != nil {
 			if isCommandUnavailableError(err) {
-				return domain.VerificationResult{Passed: false, Reason: "verification command not available"}, nil
+				return domain.VerificationResult{Passed: false, Status: domain.VerificationStatusFailed, Reason: "verification command not available"}, nil
 			}
 			if strings.TrimSpace(result.Output) != "" {
 				reasons = append(reasons, result.Output)
 			} else {
 				reasons = append(reasons, fmt.Sprintf("COMMAND: %s\nERROR: %v", command, err))
 			}
-			return domain.VerificationResult{Passed: false, Reason: strings.Join(reasons, "\n")}, nil
+			return domain.VerificationResult{Passed: false, Status: domain.VerificationStatusFailed, Reason: strings.Join(reasons, "\n")}, nil
 		}
 
 		reasons = append(reasons, result.Output)
 		records := parseStructuredCommandRecords(result.Output)
 		if len(records) == 0 {
-			return domain.VerificationResult{Passed: false, Reason: strings.Join(reasons, "\n")}, nil
+			return domain.VerificationResult{Passed: false, Status: domain.VerificationStatusFailed, Reason: strings.Join(reasons, "\n")}, nil
 		}
 		last := records[len(records)-1]
 		if last.ExitCode != 0 {
-			return domain.VerificationResult{Passed: false, Reason: strings.Join(reasons, "\n")}, nil
+			return domain.VerificationResult{Passed: false, Status: domain.VerificationStatusFailed, Reason: strings.Join(reasons, "\n")}, nil
 		}
 	}
 
-	return domain.VerificationResult{Passed: true, Reason: strings.Join(reasons, "\n")}, nil
+	return domain.VerificationResult{Passed: true, Status: domain.VerificationStatusPassed, Reason: strings.Join(reasons, "\n")}, nil
 }
 
 func (v *CommandVerifier) runCommand(ctx context.Context, command string) (domain.ToolResult, error) {

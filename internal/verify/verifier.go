@@ -57,11 +57,12 @@ func (v *Verifier) Verify(ctx context.Context, task domain.Task, session domain.
 		}
 		return domain.VerificationResult{
 			Passed: false,
+			Status: domain.VerificationStatusFailed,
 			Reason: category + ": " + CorrectionInstruction(category, failedChecks),
 		}, nil
 	}
 
-	return domain.VerificationResult{Passed: true, Reason: VerificationSuccess + ": evidence confirms completion claim"}, nil
+	return domain.VerificationResult{Passed: true, Status: domain.VerificationStatusPassed, Reason: VerificationSuccess + ": evidence confirms completion claim"}, nil
 }
 
 func (v *Verifier) classifyFailure(observation domain.Observation, failedChecks []string) string {
