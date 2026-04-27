@@ -101,7 +101,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] 1. Add explicit general task typing to the domain model
+- [x] 1. Add explicit general task typing to the domain model
 
   **What to do**: Introduce domain-level task typing and task protocol metadata so runtime and verification no longer infer “coding” implicitly from the task description. Add additive types/fields in `internal/domain` for task category, protocol hints, and verification policy reference. Keep existing task creation flow backward-compatible by defaulting unspecified tasks to a safe general category rather than a coding-only assumption.
   **Must NOT do**: Do not remove current fields from `Task`; do not introduce dynamic registration or plugin loading; do not change persisted data in a way that makes existing sessions unreadable without migration logic.
@@ -143,7 +143,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `feat(domain): add general task typing` | Files: [`internal/domain/*`, `cmd/agent/*test*`]
 
-- [ ] 2. Expand the action contract beyond respond and tool_call
+- [x] 2. Expand the action contract beyond respond and tool_call
 
   **What to do**: Extend `internal/domain/action.go` and dependent parsing structures so the runtime can express a minimal general-task action vocabulary. The minimum expanded surface for Phase 3 is: `respond`, `tool_call`, `request_input`, and `complete`. Define each action’s semantics clearly and update domain tests accordingly. `complete` should signal task completion intent without overloading plain response text; `request_input` should represent blocked external input needs without pretending verification passed.
   **Must NOT do**: Do not add more action kinds than needed; do not add parallel/subtask/multi-agent actions; do not make actions task-type-specific enums.
@@ -182,7 +182,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `feat(domain): expand general action protocol` | Files: [`internal/domain/action.go`, `internal/runtime/model_adapter.go`, `internal/config/prompts/model_adapter.go`, tests]
 
-- [ ] 3. Define a static task-type registry and protocol adapter boundary
+- [x] 3. Define a static task-type registry and protocol adapter boundary
 
   **What to do**: Add a compile-time task-type registry/lookup layer that maps task categories to protocol behavior, without introducing runtime plugins. The registry should define which verifier policy, prompting hints, and compatibility defaults apply to each supported task type. Include at least: `coding`, `research`, and `file_workflow` as initial categories, even if only two non-coding categories are fully exercised in tests.
   **Must NOT do**: Do not add filesystem-loaded manifests or plugin discovery; do not scatter task-type switches across runtime without a central registry boundary.
@@ -221,7 +221,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `feat(runtime): add static task protocol registry` | Files: [`internal/runtime/*`, `internal/domain/*`, tests]
 
-- [ ] 4. Replace coding-only verifier assumptions with a task-aware verification contract
+- [x] 4. Replace coding-only verifier assumptions with a task-aware verification contract
 
   **What to do**: Refactor the verification boundary so verification policy is selected by task type or protocol metadata rather than assuming code commands are always relevant. Keep `CommandVerifier` as the coding-task implementation, but add a generalized contract that supports at minimum: command-based verification for coding, evidence-based verification for research, and state/output verification for file workflow. Ensure “verification not applicable yet” is representable without falsely marking success. The verifier dispatch must live outside CLI-only wiring so task-aware selection is available to runtime and tests through a central contract.
   **Must NOT do**: Do not remove `CommandVerifier`; do not build a verification DSL; do not hardcode new task types directly into CLI code.
@@ -260,7 +260,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `feat(verify): add task-aware verification contract` | Files: [`internal/verify/*`, `internal/domain/ports.go`, `cmd/agent/cli.go`, tests]
 
-- [ ] 5. Update repo-tracked continuation docs for git-based cross-machine work
+- [x] 5. Update repo-tracked continuation docs for git-based cross-machine work
 
   **What to do**: Update repo-tracked documentation so planning and execution can continue on another machine using git alone. Document what is portable (`.sisyphus/plans`, `.sisyphus/notepads`, docs, progress files), what is machine-local (`.sisyphus/boulder.json`, local config secrets), and how to resume safely without hidden state assumptions. Update `README.md`, `PROGRESS.md`, and any relevant usage docs to reflect the project’s corrected goal as a general harness, not a coding-agent-only system.
   **Must NOT do**: Do not create a separate migration subsystem; do not document `.sisyphus/boulder.json` as required shared state; do not leave “coding agent” as the primary positioning text in top-level docs.
@@ -299,7 +299,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `docs: align project positioning and continuation guidance` | Files: [`README.md`, `PROGRESS.md`, `docs/*`]
 
-- [ ] 6. Refactor runtime planning/execution flow around protocol metadata
+- [x] 6. Refactor runtime planning/execution flow around protocol metadata
 
   **What to do**: Update `internal/runtime/runtime.go` so plan creation, action selection, observation handling, and retry/termination logic consult protocol metadata instead of assuming one task shape. Preserve the single loop, but make task-type-specific behavior explicit and centralized. Ensure task-type mismatch, blocked-input actions, and completion actions produce coherent session status transitions. Define explicit status semantics in this phase: `request_input` transitions the session into a new blocked-input status (or the project’s documented equivalent additive status), while `complete` transitions through the normal successful completion path without pretending a tool executed.
   **Must NOT do**: Do not create multiple runtimes; do not add goroutine-based parallel task execution; do not scatter if/else task-type branches across unrelated packages.
@@ -338,7 +338,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `refactor(runtime): drive loop from task protocol metadata` | Files: [`internal/runtime/runtime.go`, tests]
 
-- [ ] 7. Update prompt builders and model adapter parsing for the general protocol
+- [x] 7. Update prompt builders and model adapter parsing for the general protocol
 
   **What to do**: Revise `internal/config/prompts/model_adapter.go` and `internal/runtime/model_adapter.go` so provider-facing payloads include task type/protocol context and the expanded action contract. Keep JSON-only prompting, but remove wording that implies coding-first behavior. Ensure the model adapter can decode `request_input` and `complete` consistently and preserve backward compatibility for existing provider output expectations. Unsupported future action kinds must fail with an explicit deterministic error rather than silently coercing to another action.
   **Must NOT do**: Do not switch to provider-native tool calling in Phase 3; do not remove current JSON contract discipline; do not make prompt payloads depend on machine-local state.
@@ -377,7 +377,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `feat(runtime): align prompt adapters with general protocol` | Files: [`internal/config/prompts/model_adapter.go`, `internal/runtime/model_adapter.go`, tests]
 
-- [ ] 8. Implement initial non-coding verifier policies and evidence models
+- [x] 8. Implement initial non-coding verifier policies and evidence models
 
   **What to do**: Add the first concrete non-coding verification implementations required by the task-aware contract. For `research`, verification should evaluate structured evidence completeness/consistency rather than run code commands. For `file_workflow`, verification should validate expected file-state/result conditions through existing safe tools. Keep implementations deterministic and testable. Introduce the minimal domain evidence representation required for non-coding verification so research verification is not forced to overload code-command output semantics.
   **Must NOT do**: Do not add network-dependent verification flows; do not require human approval as a verification mechanism; do not add a generalized rules DSL.
@@ -417,7 +417,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `feat(verify): add non-coding verifier policies` | Files: [`internal/verify/*`, tests]
 
-- [ ] 9. Preserve CLI and persistence compatibility while surfacing general task controls
+- [x] 9. Preserve CLI and persistence compatibility while surfacing general task controls
 
   **What to do**: Update `cmd/agent` and storage compatibility paths so Phase 3 protocol changes remain additive for current users. Surface task-type selection or protocol hints in a backward-compatible manner, ensure session persistence can store/reload new metadata, and keep current defaults safe for existing users who do not pass new flags.
   **Must NOT do**: Do not rename existing subcommands; do not require new flags for current coding-oriented flows; do not break resume/inspect on older stored sessions.
@@ -463,7 +463,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `feat(cli): preserve compatibility for general task protocol` | Files: [`cmd/agent/*`, `internal/store/*`, tests]
 
-- [ ] 10. Prove the protocol with end-to-end non-coding task flows
+- [x] 10. Prove the protocol with end-to-end non-coding task flows
 
   **What to do**: Add deterministic end-to-end tests/fixtures that prove the harness can execute at least two non-coding task categories under the new protocol. Required categories for this phase: `research` and `file_workflow`. Use fake/model fixtures where needed so the tests are deterministic and do not rely on external network access.
   **Must NOT do**: Do not use flaky live-provider tests as the proof of correctness; do not claim generality without these end-to-end demonstrations.
@@ -503,7 +503,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: YES | Message: `test(runtime): prove general task protocol end to end` | Files: [`internal/runtime/*test*`, `cmd/agent/*test*`, `testdata/*`]
 
-- [ ] 11. Run full regression and compatibility wave
+- [x] 11. Run full regression and compatibility wave
 
   **What to do**: Execute the full test/build/race regression suite and add any missing targeted regressions discovered during Phase 3 work. This task exists to prove that protocol generalization did not regress current coding paths or CLI/persistence behavior.
   **Must NOT do**: Do not skip race coverage; do not treat partial package tests as sufficient final evidence.
@@ -542,7 +542,7 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 
   **Commit**: NO | Message: `n/a` | Files: [none]
 
-- [ ] 12. Close documentation and operator guidance for Phase 3
+- [x] 12. Close documentation and operator guidance for Phase 3
 
   **What to do**: Finalize docs, progress notes, and contributor guidance so future work starts from the correct general-harness framing. Update “next steps” sections to reflect post-Phase-3 priorities and ensure contributors know that repo-tracked plans/notepads/docs are the handoff mechanism, while machine-local files remain non-authoritative.
   **Must NOT do**: Do not leave stale “coding agent” terminology in top-level files; do not document unfinished future phases as if implemented.
