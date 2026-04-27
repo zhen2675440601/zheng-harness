@@ -8,6 +8,7 @@ type SessionStatus string
 const (
 	SessionStatusPending            SessionStatus = "pending"
 	SessionStatusRunning            SessionStatus = "running"
+	SessionStatusBlockedInput       SessionStatus = "blocked_input"
 	SessionStatusSuccess            SessionStatus = "success"
 	SessionStatusVerificationFailed SessionStatus = "verification_failed"
 	SessionStatusBudgetExceeded     SessionStatus = "budget_exceeded"

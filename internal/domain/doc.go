@@ -1,5 +1,5 @@
 // Package domain contains the core business concepts and contracts for the
-// coding agent.
+// general agent harness.
 //
 // Ownership: this package tree defines the stable inner model and must stay
 // independent from infrastructure concerns.

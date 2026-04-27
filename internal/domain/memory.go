@@ -1,9 +1,49 @@
 package domain
 
-import memorypolicy "zheng-harness/internal/memory"
+import "time"
 
-// MemoryEntry is a stable alias for persisted memory records.
-type MemoryEntry = memorypolicy.Entry
+// MemoryScope defines the persistence boundary for a memory entry.
+type MemoryScope string
 
-// RecallQuery is a stable alias for memory recall filters.
-type RecallQuery = memorypolicy.Query
+const (
+	MemoryScopeSession MemoryScope = "session"
+	MemoryScopeProject MemoryScope = "project"
+	MemoryScopeGlobal  MemoryScope = "global"
+)
+
+// MemoryType classifies the kind of memory content.
+type MemoryType string
+
+const (
+	MemoryTypePreference MemoryType = "preference"
+	MemoryTypeFact       MemoryType = "fact"
+	MemoryTypeSummary    MemoryType = "summary"
+)
+
+// MemoryEntry is a persisted memory record with provenance and confidence.
+type MemoryEntry struct {
+	ID         string
+	SessionID  string
+	ProjectKey string
+	Scope      MemoryScope
+	Type       MemoryType
+	Key        string
+	Content    string
+	Source     string
+	Confidence int
+	Provenance string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	ExpiresAt  *time.Time
+}
+
+// RecallQuery filters memory entries during recall.
+type RecallQuery struct {
+	SessionID string
+	Scope     MemoryScope
+	Type      MemoryType
+	Key       string
+	Source    string
+	Limit     int
+	Prefix    string
+}
