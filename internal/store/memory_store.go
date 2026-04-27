@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"zheng-harness/internal/domain"
-	memorypolicy "zheng-harness/internal/memory"
 )
 
 type SQLiteMemoryStore struct {
@@ -49,26 +49,26 @@ func (s *SQLiteMemoryStore) Remember(ctx context.Context, sessionID string, obse
 	}
 
 	now := time.Now().UTC()
-	entry := memorypolicy.Entry{
+	entry := domain.MemoryEntry{
 		SessionID:  sessionID,
-		Scope:      memorypolicy.ScopeSession,
-		Type:       memorypolicy.TypeSummary,
+		Scope:      domain.MemoryScopeSession,
+		Type:       domain.MemoryTypeSummary,
 		Key:        "observation-" + formatTimestamp(now),
-		Value:      value,
+		Content:    value,
 		Source:     source,
 		Confidence: 50,
 		Provenance: "runtime.Remember",
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	if err := memorypolicy.ValidateEntry(entry); err != nil {
+	if err := validateMemoryEntry(entry); err != nil {
 		return fmt.Errorf("validate runtime observation: %w", err)
 	}
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO memory_entries (session_id, scope, type, key, value, source, confidence, provenance, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, nullableSessionID(entry.SessionID), string(entry.Scope), string(entry.Type), entry.Key, entry.Value, entry.Source, entry.Confidence, nullableString(entry.Provenance), entry.CreatedAt.UTC(), entry.UpdatedAt.UTC())
+	`, nullableSessionID(entry.SessionID), string(entry.Scope), string(entry.Type), entry.Key, entry.Content, entry.Source, entry.Confidence, nullableString(entry.Provenance), entry.CreatedAt.UTC(), entry.UpdatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("persist runtime observation: %w", err)
 	}
@@ -79,12 +79,12 @@ func formatTimestamp(t time.Time) string {
 	return t.Format("20060102150405")
 }
 
-func (s *SQLiteMemoryStore) Write(ctx context.Context, entry memorypolicy.Entry) (memorypolicy.Entry, error) {
+func (s *SQLiteMemoryStore) Write(ctx context.Context, entry domain.MemoryEntry) (domain.MemoryEntry, error) {
 	if s == nil || s.db == nil {
-		return memorypolicy.Entry{}, errors.New("sqlite memory store is not initialized")
+		return domain.MemoryEntry{}, errors.New("sqlite memory store is not initialized")
 	}
-	if err := memorypolicy.ValidateEntry(entry); err != nil {
-		return memorypolicy.Entry{}, err
+	if err := validateMemoryEntry(entry); err != nil {
+		return domain.MemoryEntry{}, err
 	}
 
 	now := time.Now().UTC()
@@ -98,23 +98,23 @@ func (s *SQLiteMemoryStore) Write(ctx context.Context, entry memorypolicy.Entry)
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO memory_entries (session_id, scope, type, key, value, source, confidence, provenance, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, nullableSessionID(entry.SessionID), string(entry.Scope), string(entry.Type), entry.Key, entry.Value, entry.Source, entry.Confidence, nullableString(entry.Provenance), entry.CreatedAt.UTC(), entry.UpdatedAt.UTC())
+	`, nullableSessionID(entry.SessionID), string(entry.Scope), string(entry.Type), entry.Key, entry.Content, entry.Source, entry.Confidence, nullableString(entry.Provenance), entry.CreatedAt.UTC(), entry.UpdatedAt.UTC())
 	if err != nil {
-		return memorypolicy.Entry{}, fmt.Errorf("write memory entry %q: %w", entry.Key, err)
+		return domain.MemoryEntry{}, fmt.Errorf("write memory entry %q: %w", entry.Key, err)
 	}
 	entryID, err := result.LastInsertId()
 	if err != nil {
-		return memorypolicy.Entry{}, fmt.Errorf("read inserted memory entry id: %w", err)
+		return domain.MemoryEntry{}, fmt.Errorf("read inserted memory entry id: %w", err)
 	}
-	entry.ID = entryID
+	entry.ID = strconv.FormatInt(entryID, 10)
 	return entry, nil
 }
 
-func (s *SQLiteMemoryStore) Recall(ctx context.Context, query memorypolicy.Query) ([]memorypolicy.Entry, error) {
+func (s *SQLiteMemoryStore) Recall(ctx context.Context, query domain.RecallQuery) ([]domain.MemoryEntry, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("sqlite memory store is not initialized")
 	}
-	if err := memorypolicy.ValidateQuery(query); err != nil {
+	if err := validateRecallQuery(query); err != nil {
 		return nil, err
 	}
 
@@ -129,7 +129,7 @@ func (s *SQLiteMemoryStore) Recall(ctx context.Context, query memorypolicy.Query
 		statement += ` AND scope = ?`
 		args = append(args, string(query.Scope))
 	}
-	if query.Scope == memorypolicy.ScopeSession {
+	if query.Scope == domain.MemoryScopeSession {
 		statement += ` AND session_id = ?`
 		args = append(args, query.SessionID)
 	}
@@ -154,21 +154,21 @@ func (s *SQLiteMemoryStore) Recall(ctx context.Context, query memorypolicy.Query
 	}
 	defer rows.Close()
 
-	entries := make([]memorypolicy.Entry, 0)
+	entries := make([]domain.MemoryEntry, 0)
 	for rows.Next() {
 		var (
-			entry      memorypolicy.Entry
+			entry      domain.MemoryEntry
 			sessionID  sql.NullString
 			provenance sql.NullString
 			scope      string
 			entryType  string
 		)
-		if err := rows.Scan(&entry.ID, &sessionID, &scope, &entryType, &entry.Key, &entry.Value, &entry.Source, &entry.Confidence, &provenance, &entry.CreatedAt, &entry.UpdatedAt); err != nil {
+		if err := rows.Scan(&entry.ID, &sessionID, &scope, &entryType, &entry.Key, &entry.Content, &entry.Source, &entry.Confidence, &provenance, &entry.CreatedAt, &entry.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan recalled memory entry: %w", err)
 		}
 		entry.SessionID = sessionID.String
-		entry.Scope = memorypolicy.Scope(scope)
-		entry.Type = memorypolicy.Type(entryType)
+		entry.Scope = domain.MemoryScope(scope)
+		entry.Type = domain.MemoryType(entryType)
 		entry.Provenance = provenance.String
 		entries = append(entries, entry)
 	}
@@ -176,6 +176,62 @@ func (s *SQLiteMemoryStore) Recall(ctx context.Context, query memorypolicy.Query
 		return nil, fmt.Errorf("iterate recalled memory entries: %w", err)
 	}
 	return entries, nil
+}
+
+func validateMemoryEntry(entry domain.MemoryEntry) error {
+	if strings.TrimSpace(entry.Key) == "" {
+		return errors.New("memory entry failed validation: key must not be empty")
+	}
+	if strings.TrimSpace(entry.Content) == "" {
+		return errors.New("memory entry failed validation: content must not be empty")
+	}
+	if strings.TrimSpace(entry.Source) == "" {
+		return errors.New("memory entry failed validation: source must not be empty")
+	}
+	if entry.Confidence < 0 || entry.Confidence > 100 {
+		return errors.New("memory entry failed validation: confidence must be between 0 and 100")
+	}
+	switch entry.Scope {
+	case domain.MemoryScopeSession, domain.MemoryScopeProject, domain.MemoryScopeGlobal:
+	default:
+		return fmt.Errorf("memory entry failed validation: invalid scope %q", entry.Scope)
+	}
+	switch entry.Type {
+	case domain.MemoryTypePreference, domain.MemoryTypeFact, domain.MemoryTypeSummary:
+	default:
+		return fmt.Errorf("memory entry failed validation: invalid type %q", entry.Type)
+	}
+	if entry.Scope == domain.MemoryScopeSession && strings.TrimSpace(entry.SessionID) == "" {
+		return errors.New("memory entry failed validation: session scope requires session id")
+	}
+	if entry.Scope == domain.MemoryScopeGlobal {
+		return errors.New("global memory is read-only")
+	}
+	return nil
+}
+
+func validateRecallQuery(query domain.RecallQuery) error {
+	if query.Scope != "" {
+		switch query.Scope {
+		case domain.MemoryScopeSession, domain.MemoryScopeProject, domain.MemoryScopeGlobal:
+		default:
+			return fmt.Errorf("invalid query scope %q", query.Scope)
+		}
+	}
+	if query.Type != "" {
+		switch query.Type {
+		case domain.MemoryTypePreference, domain.MemoryTypeFact, domain.MemoryTypeSummary:
+		default:
+			return fmt.Errorf("invalid query type %q", query.Type)
+		}
+	}
+	if query.Scope == domain.MemoryScopeSession && strings.TrimSpace(query.SessionID) == "" {
+		return errors.New("session scope requires matching session id")
+	}
+	if query.Limit < 0 {
+		return errors.New("query limit must not be negative")
+	}
+	return nil
 }
 
 func nullableSessionID(sessionID string) any {

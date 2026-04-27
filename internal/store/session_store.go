@@ -15,6 +15,16 @@ type SQLiteSessionStore struct {
 	db *sql.DB
 }
 
+type storedTask struct {
+	Category           domain.TaskCategory `json:"category,omitempty"`
+	ProtocolHint       string              `json:"protocol_hint,omitempty"`
+	VerificationPolicy string              `json:"verification_policy,omitempty"`
+}
+
+type storedSessionMetadata struct {
+	Task *storedTask `json:"task,omitempty"`
+}
+
 type storedPlan struct {
 	Summary string        `json:"summary"`
 	Steps   []domain.Step `json:"steps"`
@@ -51,6 +61,27 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, session domain.Ses
 	`, session.ID, session.TaskID, string(session.Status), nil, session.CreatedAt.UTC(), session.UpdatedAt.UTC(), nil)
 	if err != nil {
 		return fmt.Errorf("save session %q: %w", session.ID, err)
+	}
+	return nil
+}
+
+func (s *SQLiteSessionStore) SaveTask(ctx context.Context, sessionID string, task domain.Task) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite session store is not initialized")
+	}
+
+	metadata, err := json.Marshal(storedSessionMetadata{Task: newStoredTask(task)})
+	if err != nil {
+		return fmt.Errorf("marshal task metadata for session %q: %w", sessionID, err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET config_json = ?, updated_at = CASE WHEN updated_at > created_at THEN updated_at ELSE created_at END
+		WHERE id = ?
+	`, string(metadata), sessionID)
+	if err != nil {
+		return fmt.Errorf("save task metadata for session %q: %w", sessionID, err)
 	}
 	return nil
 }
@@ -132,23 +163,66 @@ func (s *SQLiteSessionStore) ResumeSession(ctx context.Context, sessionID string
 	return session, plan, steps, nil
 }
 
+func (s *SQLiteSessionStore) LoadTask(ctx context.Context, sessionID string) (domain.Task, bool, error) {
+	if s == nil || s.db == nil {
+		return domain.Task{}, false, errors.New("sqlite session store is not initialized")
+	}
+
+	session, metadataTask, err := s.loadSessionRecord(ctx, sessionID)
+	if err != nil {
+		return domain.Task{}, false, err
+	}
+	plan, err := s.loadLatestPlan(ctx, session.TaskID)
+	if err != nil {
+		return domain.Task{}, false, err
+	}
+
+	task := domain.Task{
+		ID:          session.TaskID,
+		Description: plan.Summary,
+		Goal:        plan.Summary,
+		CreatedAt:   session.CreatedAt,
+	}
+
+	stored := metadataTask
+	if stored == nil {
+		return task.Normalize(), false, nil
+	}
+
+	task.Category = stored.Category
+	task.ProtocolHint = stored.ProtocolHint
+	task.VerificationPolicy = stored.VerificationPolicy
+	return task.Normalize(), true, nil
+}
+
 func (s *SQLiteSessionStore) loadSession(ctx context.Context, sessionID string) (domain.Session, error) {
+	session, _, err := s.loadSessionRecord(ctx, sessionID)
+	return session, err
+}
+
+func (s *SQLiteSessionStore) loadSessionRecord(ctx context.Context, sessionID string) (domain.Session, *storedTask, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, task_id, status, created_at, updated_at
+		SELECT id, task_id, status, config_json, created_at, updated_at
 		FROM sessions
 		WHERE id = ?
 	`, sessionID)
 
 	var session domain.Session
 	var status string
-	if err := row.Scan(&session.ID, &session.TaskID, &status, &session.CreatedAt, &session.UpdatedAt); err != nil {
+	var configJSON sql.NullString
+	if err := row.Scan(&session.ID, &session.TaskID, &status, &configJSON, &session.CreatedAt, &session.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return domain.Session{}, fmt.Errorf("session %q not found: %w", sessionID, err)
+			return domain.Session{}, nil, fmt.Errorf("session %q not found: %w", sessionID, err)
 		}
-		return domain.Session{}, fmt.Errorf("load session %q: %w", sessionID, err)
+		return domain.Session{}, nil, fmt.Errorf("load session %q: %w", sessionID, err)
 	}
 	session.Status = domain.SessionStatus(status)
-	return session, nil
+
+	metadata, err := parseStoredSessionMetadata(configJSON)
+	if err != nil {
+		return domain.Session{}, nil, fmt.Errorf("load session %q metadata: %w", sessionID, err)
+	}
+	return session, metadata.Task, nil
 }
 
 func (s *SQLiteSessionStore) loadLatestPlan(ctx context.Context, taskID string) (domain.Plan, error) {
@@ -176,6 +250,32 @@ func (s *SQLiteSessionStore) loadLatestPlan(ctx context.Context, taskID string) 
 	plan.Summary = stored.Summary
 	plan.Steps = stored.Steps
 	return plan, nil
+}
+
+func newStoredTask(task domain.Task) *storedTask {
+	normalized := task.Normalize()
+	if normalized.Category == domain.TaskCategoryGeneral && normalized.ProtocolHint == "" && normalized.VerificationPolicy == "" {
+		return nil
+	}
+	return &storedTask{
+		Category:           normalized.Category,
+		ProtocolHint:       normalized.ProtocolHint,
+		VerificationPolicy: normalized.VerificationPolicy,
+	}
+}
+
+func parseStoredSessionMetadata(raw sql.NullString) (storedSessionMetadata, error) {
+	if !raw.Valid || raw.String == "" {
+		return storedSessionMetadata{}, nil
+	}
+	var metadata storedSessionMetadata
+	if err := json.Unmarshal([]byte(raw.String), &metadata); err != nil {
+		return storedSessionMetadata{}, err
+	}
+	if metadata.Task != nil {
+		metadata.Task.Category = metadata.Task.Category.Normalize()
+	}
+	return metadata, nil
 }
 
 func (s *SQLiteSessionStore) loadSteps(ctx context.Context, sessionID string) ([]domain.Step, error) {
