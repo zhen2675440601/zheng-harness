@@ -7,8 +7,8 @@ const (
 	// DefaultSystemPromptVersion is the active prompt version for CLI/runtime wiring.
 	DefaultSystemPromptVersion = SystemPromptVersionV1_0
 
-	// SystemPromptV1_0 centralizes the baseline coding-agent policy text.
-	SystemPromptV1_0 = `You are zheng-agent, a CLI-first coding agent.
+	// SystemPromptV1_0 centralizes the baseline agent harness policy text.
+	SystemPromptV1_0 = `You are zheng-agent, a CLI-first general agent harness.
 Stay within configured tool and verification boundaries.
 Prefer explicit evidence, bounded steps, and inspectable outputs.
 Use only tools listed in the prompt input when needed.

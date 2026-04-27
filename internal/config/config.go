@@ -272,6 +272,9 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 	if parsed.DefaultProvider != nil {
 		cfg.DefaultProvider = strings.ToLower(strings.TrimSpace(*parsed.DefaultProvider))
 	}
+	if parsed.Provider == nil && strings.TrimSpace(cfg.Provider) == "" {
+		cfg.Provider = cfg.DefaultProvider
+	}
 	if len(parsed.Providers) > 0 {
 		providers := make(map[string]ProviderSettings, len(parsed.Providers))
 		for name, provider := range parsed.Providers {
@@ -289,6 +292,9 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 		if len(providers) > 0 {
 			cfg.Providers = providers
 		}
+	}
+	if parsed.Provider == nil {
+		cfg.Provider = cfg.DefaultProvider
 	}
 	if parsed.Runtime != nil {
 		if parsed.Runtime.MaxSteps != nil {

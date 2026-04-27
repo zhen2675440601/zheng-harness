@@ -19,11 +19,7 @@ func BuildCreatePlanInput(task domain.Task, session domain.Session, memory []dom
 			"Use shape: {\"summary\": string, \"steps\": []string}.",
 			"Keep the summary concise and the steps actionable.",
 		},
-		"task": map[string]any{
-			"id":          task.ID,
-			"description": task.Description,
-			"goal":        task.Goal,
-		},
+		"task":    buildTaskPayload(task),
 		"session": map[string]any{
 			"id":     session.ID,
 			"status": session.Status,
@@ -56,15 +52,14 @@ func BuildNextActionInput(task domain.Task, session domain.Session, plan domain.
 		"operation": "next_action",
 		"instructions": []string{
 			"Return JSON only.",
-			"Use shape: {\"type\": \"respond\"|\"tool_call\", \"summary\": string, \"response\": string, \"tool_call\": {\"name\": string, \"input\": string, \"timeout\": string}}.",
+			"Use shape: {\"type\": \"respond\"|\"tool_call\"|\"request_input\"|\"complete\", \"summary\": string, \"response\": string, \"tool_call\": {\"name\": string, \"input\": string, \"timeout\": string}}.",
 			"When type is respond, provide response and omit tool_call.",
 			"When type is tool_call, provide tool_call and omit response.",
+			"When type is request_input, provide response describing the exact missing external input and omit tool_call.",
+			"When type is complete, provide response containing the final user-facing completion message and omit tool_call.",
+			"Choose the action type that best fits the task protocol; do not assume the task is code-focused.",
 		},
-		"task": map[string]any{
-			"id":          task.ID,
-			"description": task.Description,
-			"goal":        task.Goal,
-		},
+		"task":    buildTaskPayload(task),
 		"session": map[string]any{
 			"id":     session.ID,
 			"status": session.Status,
@@ -115,11 +110,7 @@ func BuildObserveInput(task domain.Task, session domain.Session, plan domain.Pla
 			"Summarize the outcome of the action using the tool result if present.",
 			"Set final_response when the user-facing answer is ready.",
 		},
-		"task": map[string]any{
-			"id":          task.ID,
-			"description": task.Description,
-			"goal":        task.Goal,
-		},
+		"task": buildTaskPayload(task),
 		"session": map[string]any{
 			"id":     session.ID,
 			"status": session.Status,
@@ -177,7 +168,7 @@ func buildMemoryPayload(memory []domain.MemoryEntry) []map[string]any {
 
 	payload := make([]map[string]any, 0, len(memory))
 	for _, entry := range memory {
-		content := strings.TrimSpace(entry.Value)
+		content := strings.TrimSpace(entry.Content)
 		if content == "" {
 			continue
 		}
@@ -194,6 +185,30 @@ func buildMemoryPayload(memory []domain.MemoryEntry) []map[string]any {
 		return nil
 	}
 	return payload
+}
+
+func buildTaskPayload(task domain.Task) map[string]any {
+	category := task.CategoryOrDefault()
+	protocolHint := strings.TrimSpace(task.ProtocolHint)
+	verificationPolicy := strings.TrimSpace(task.VerificationPolicy)
+
+	protocol := map[string]any{
+		"category": category,
+	}
+	if protocolHint != "" {
+		protocol["hint"] = protocolHint
+	}
+	if verificationPolicy != "" {
+		protocol["verification_policy"] = verificationPolicy
+	}
+
+	return map[string]any{
+		"id":          task.ID,
+		"description": task.Description,
+		"goal":        task.Goal,
+		"type":        category,
+		"protocol":    protocol,
+	}
 }
 
 func truncateToolSchema(schema string) string {
