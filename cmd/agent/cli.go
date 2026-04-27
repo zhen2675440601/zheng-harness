@@ -39,22 +39,34 @@ type cliApp struct {
 }
 
 type runJSONOutput struct {
-	Command   string               `json:"command"`
-	SessionID string               `json:"session_id"`
-	Status    domain.SessionStatus `json:"status"`
-	TaskInput string               `json:"task_input"`
-	Plan      string               `json:"plan"`
-	Steps     int                  `json:"steps"`
+	Command            string               `json:"command"`
+	SessionID          string               `json:"session_id"`
+	Status             domain.SessionStatus `json:"status"`
+	TaskInput          string               `json:"task_input"`
+	Plan               string               `json:"plan"`
+	Steps              int                  `json:"steps"`
+	TaskType           domain.TaskCategory  `json:"task_type,omitempty"`
+	ProtocolHint       string               `json:"protocol_hint,omitempty"`
+	VerificationPolicy string               `json:"verification_policy,omitempty"`
 }
 
 type inspectJSONOutput struct {
-	Command          string               `json:"command"`
-	SessionID        string               `json:"session_id"`
-	Status           domain.SessionStatus `json:"status"`
-	TerminatedReason string               `json:"terminated_reason,omitempty"`
-	Plan             string               `json:"plan"`
-	StepCount        int                  `json:"step_count"`
-	StepSummaries    []string             `json:"step_summaries"`
+	Command            string               `json:"command"`
+	SessionID          string               `json:"session_id"`
+	Status             domain.SessionStatus `json:"status"`
+	TerminatedReason   string               `json:"terminated_reason,omitempty"`
+	Plan               string               `json:"plan"`
+	StepCount          int                  `json:"step_count"`
+	StepSummaries      []string             `json:"step_summaries"`
+	TaskType           domain.TaskCategory  `json:"task_type,omitempty"`
+	ProtocolHint       string               `json:"protocol_hint,omitempty"`
+	VerificationPolicy string               `json:"verification_policy,omitempty"`
+}
+
+type taskMetadataFlags struct {
+	TaskType           domain.TaskCategory
+	ProtocolHint       string
+	VerificationPolicy string
 }
 
 // configFlagNames contains the flag names that config.Load recognizes.
@@ -178,18 +190,18 @@ func newVerifierFromConfig(cfg config.Config, executor domain.ToolExecutor) doma
 	case config.VerifyModeOff:
 		return FakeVerifier{}
 	case config.VerifyModeStandard:
-		return verify.NewCommandVerifier(executor)
+		return verify.NewTaskAwareVerifier(cfg.Runtime.VerifyMode, executor)
 	case config.VerifyModeStrict:
-		return verify.NewCommandVerifier(executor)
+		return verify.NewTaskAwareVerifier(cfg.Runtime.VerifyMode, executor)
 	default:
-		return verify.NewCommandVerifier(executor)
+		return verify.NewTaskAwareVerifier(cfg.Runtime.VerifyMode, executor)
 	}
 }
 
 func (a cliApp) run(ctx context.Context, args []string) int {
-	if len(args) == 0 {
+	if len(args) == 0 || isRootHelpArg(args[0]) {
 		a.printUsage()
-		return 1
+		return 0
 	}
 
 	switch args[0] {
@@ -218,6 +230,11 @@ func (a cliApp) run(ctx context.Context, args []string) int {
 	}
 }
 
+func isRootHelpArg(arg string) bool {
+	trimmed := strings.TrimSpace(arg)
+	return trimmed == "-h" || trimmed == "--help" || trimmed == "help"
+}
+
 func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
@@ -234,6 +251,9 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	var allowCommands stringSliceFlag
 	fs.Var(&allowCommands, "allow-command", "additional allowed command (repeatable)")
 	taskInput := fs.String("task", "", "task description")
+	taskType := fs.String("task-type", "", "optional general task type (coding, research, file_workflow, general)")
+	protocolHint := fs.String("task-protocol", "", "optional task protocol hint")
+	verificationPolicy := fs.String("task-verification-policy", "", "optional task verification policy")
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
 	maxSteps := fs.Int("max-steps", a.defaultMaxSteps(), "maximum runtime steps")
 	jsonMode := fs.Bool("json", false, "emit machine-readable JSON")
@@ -288,7 +308,14 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 		ID:          sessionID,
 		Description: strings.TrimSpace(*taskInput),
 		Goal:        strings.TrimSpace(*taskInput),
+		Category:    domain.TaskCategory(strings.TrimSpace(*taskType)),
+		ProtocolHint: strings.TrimSpace(*protocolHint),
+		VerificationPolicy: strings.TrimSpace(*verificationPolicy),
 		CreatedAt:   now,
+	}
+	task = normalizeTaskMetadata(task)
+	if err := sessionStore.SaveTask(ctx, sessionID, task); err != nil {
+		return fmt.Errorf("save task metadata: %w", err)
 	}
 
 	session, plan, steps, runErr := engine.Run(runCtx, task)
@@ -309,7 +336,7 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 		}
 	}
 
-	a.emitRunResult(*jsonMode, task.Description, session, plan, steps)
+	a.emitRunResult(*jsonMode, task, session, plan, steps)
 	if runErr != nil {
 		return runErr
 	}
@@ -378,11 +405,9 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 	runCtx, stop := a.withSignalCancellation(ctx)
 	defer stop()
 
-	continuedTask := domain.Task{
-		ID:          session.TaskID,
-		Description: plan.Summary,
-		Goal:        plan.Summary,
-		CreatedAt:   session.CreatedAt,
+	continuedTask, _, taskErr := sessionStore.LoadTask(ctx, *sessionID)
+	if taskErr != nil {
+		return taskErr
 	}
 
 	session, plan, steps, err = engine.Run(runCtx, continuedTask)
@@ -443,7 +468,11 @@ func (a cliApp) inspectCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	a.emitInspectResult(*jsonMode, session, plan, steps)
+	task, _, taskErr := sessionStore.LoadTask(ctx, *sessionID)
+	if taskErr != nil {
+		return taskErr
+	}
+	a.emitInspectResult(*jsonMode, task, session, plan, steps)
 	return nil
 }
 
@@ -516,20 +545,24 @@ func (a cliApp) withSignalCancellation(ctx context.Context) (context.Context, fu
 	}
 }
 
-func (a cliApp) emitRunResult(jsonMode bool, taskInput string, session domain.Session, plan domain.Plan, steps []domain.Step) {
+func (a cliApp) emitRunResult(jsonMode bool, task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step) {
+	metadata := summarizeTaskMetadata(task)
 	if jsonMode {
 		payload := runJSONOutput{
-			Command:   "run",
-			SessionID: session.ID,
-			Status:    session.Status,
-			TaskInput: taskInput,
-			Plan:      plan.Summary,
-			Steps:     len(steps),
+			Command:            "run",
+			SessionID:          session.ID,
+			Status:             session.Status,
+			TaskInput:          task.Description,
+			Plan:               plan.Summary,
+			Steps:              len(steps),
+			TaskType:           metadata.TaskType,
+			ProtocolHint:       metadata.ProtocolHint,
+			VerificationPolicy: metadata.VerificationPolicy,
 		}
 		writeJSON(a.stdout, payload)
 		return
 	}
-	_, _ = fmt.Fprintf(a.stdout, "Session: %s\nStatus: %s\nTask: %s\nPlan: %s\nSteps: %d\n", session.ID, session.Status, taskInput, plan.Summary, len(steps))
+	_, _ = fmt.Fprintf(a.stdout, "Session: %s\nStatus: %s\nTask: %s\nPlan: %s\nSteps: %d\n", session.ID, session.Status, task.Description, plan.Summary, len(steps))
 }
 
 func (a cliApp) emitResumeResult(session domain.Session, plan domain.Plan, steps []domain.Step, continued bool) {
@@ -546,17 +579,21 @@ func (a cliApp) emitResumeResult(session domain.Session, plan domain.Plan, steps
 	}
 }
 
-func (a cliApp) emitInspectResult(jsonMode bool, session domain.Session, plan domain.Plan, steps []domain.Step) {
+func (a cliApp) emitInspectResult(jsonMode bool, task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step) {
 	terminatedReason := deriveTerminationReason(session, steps)
+	metadata := summarizeTaskMetadata(task)
 	if jsonMode {
 		payload := inspectJSONOutput{
-			Command:          "inspect",
-			SessionID:        session.ID,
-			Status:           session.Status,
-			TerminatedReason: terminatedReason,
-			Plan:             plan.Summary,
-			StepCount:        len(steps),
-			StepSummaries:    summarizeSteps(steps),
+			Command:            "inspect",
+			SessionID:          session.ID,
+			Status:             session.Status,
+			TerminatedReason:   terminatedReason,
+			Plan:               plan.Summary,
+			StepCount:          len(steps),
+			StepSummaries:      summarizeSteps(steps),
+			TaskType:           metadata.TaskType,
+			ProtocolHint:       metadata.ProtocolHint,
+			VerificationPolicy: metadata.VerificationPolicy,
 		}
 		writeJSON(a.stdout, payload)
 		return
@@ -575,6 +612,7 @@ func (a cliApp) printUsage() {
 	_, _ = fmt.Fprintln(a.stderr, "  run --task \"task description\" [--db ./agent.db] [--json]")
 	_, _ = fmt.Fprintln(a.stderr, "  resume --session <id> [--db ./agent.db]")
 	_, _ = fmt.Fprintln(a.stderr, "  inspect --session <id> [--db ./agent.db] [--json]")
+	_, _ = fmt.Fprintln(a.stderr, "  --help, -h, help  Show this help")
 }
 
 func writeJSON(w io.Writer, payload any) {
@@ -603,6 +641,22 @@ func summarizeSteps(steps []domain.Step) []string {
 		summaries = append(summaries, fmt.Sprintf("step %d: %s", step.Index, strings.TrimSpace(summary)))
 	}
 	return summaries
+}
+
+func normalizeTaskMetadata(task domain.Task) domain.Task {
+	task = task.Normalize()
+	task.ProtocolHint = strings.TrimSpace(task.ProtocolHint)
+	task.VerificationPolicy = strings.TrimSpace(task.VerificationPolicy)
+	return task
+}
+
+func summarizeTaskMetadata(task domain.Task) taskMetadataFlags {
+	normalized := normalizeTaskMetadata(task)
+	return taskMetadataFlags{
+		TaskType:           normalized.Category,
+		ProtocolHint:       normalized.ProtocolHint,
+		VerificationPolicy: normalized.VerificationPolicy,
+	}
 }
 
 func deriveTerminationReason(session domain.Session, steps []domain.Step) string {

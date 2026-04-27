@@ -52,6 +52,9 @@ func TestRunCommandJSONCreatesPersistentSession(t *testing.T) {
 	if payload.TaskInput != "inspect repository" {
 		t.Fatalf("task input = %q, want original task", payload.TaskInput)
 	}
+	if payload.TaskType != domain.TaskCategoryGeneral {
+		t.Fatalf("task type = %q, want %q", payload.TaskType, domain.TaskCategoryGeneral)
+	}
 
 	sessionStore, err := store.NewSQLiteSessionStore(dbPath)
 	if err != nil {
@@ -71,6 +74,16 @@ func TestRunCommandJSONCreatesPersistentSession(t *testing.T) {
 	}
 	if len(steps) != 1 {
 		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+	loadedTask, ok, err := sessionStore.LoadTask(context.Background(), payload.SessionID)
+	if err != nil {
+		t.Fatalf("load persisted task: %v", err)
+	}
+	if ok {
+		t.Fatalf("LoadTask metadata flag = %v, want false for default run", ok)
+	}
+	if loadedTask.Category != domain.TaskCategoryGeneral {
+		t.Fatalf("loaded task category = %q, want %q", loadedTask.Category, domain.TaskCategoryGeneral)
 	}
 }
 
@@ -318,8 +331,124 @@ func TestRunCLIVerifyModeStrictUsesCommandVerifier(t *testing.T) {
 
 	strictCfg := config.Default()
 	strictCfg.Runtime.VerifyMode = config.VerifyModeStrict
-	if _, ok := newVerifierFromConfig(strictCfg, FakeToolExecutor{}).(*verify.CommandVerifier); !ok {
-		t.Fatalf("verify_mode=strict should wire command verifier")
+	if _, ok := newVerifierFromConfig(strictCfg, FakeToolExecutor{}).(*verify.TaskAwareVerifier); !ok {
+		t.Fatalf("verify_mode=strict should wire task-aware verifier")
+	}
+}
+
+func TestRootHelpShowsUsage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "no args", args: nil},
+		{name: "long help", args: []string{"--help"}},
+		{name: "short help", args: []string{"-h"}},
+		{name: "help command", args: []string{"help"}},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			exitCode := runCLI(context.Background(), tt.args, &stdout, &stderr)
+			if exitCode != 0 {
+				t.Fatalf("exit code = %d, want 0", exitCode)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "Usage: zheng-agent <run|resume|inspect> [flags]") {
+				t.Fatalf("stderr = %q, want usage output", stderr.String())
+			}
+			if strings.Contains(stderr.String(), "unknown subcommand") {
+				t.Fatalf("stderr = %q, should not report unknown subcommand", stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunInspectAndResumePreserveTaskMetadata(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	var runOut bytes.Buffer
+	var runErr bytes.Buffer
+	if exitCode := runCLI(context.Background(), []string{
+		"run",
+		"--task", "collect research notes",
+		"--task-type", string(domain.TaskCategoryResearch),
+		"--task-protocol", "evidence-first research workflow",
+		"--task-verification-policy", "evidence",
+		"--verify-mode", config.VerifyModeOff,
+		"--db", dbPath,
+		"--json",
+	}, &runOut, &runErr); exitCode != 0 {
+		t.Fatalf("run exit code = %d, stderr=%s", exitCode, runErr.String())
+	}
+
+	var runPayload runJSONOutput
+	if err := json.Unmarshal(runOut.Bytes(), &runPayload); err != nil {
+		t.Fatalf("unmarshal run output: %v", err)
+	}
+	if runPayload.TaskType != domain.TaskCategoryResearch {
+		t.Fatalf("run task_type = %q, want %q", runPayload.TaskType, domain.TaskCategoryResearch)
+	}
+	if runPayload.ProtocolHint != "evidence-first research workflow" {
+		t.Fatalf("run protocol_hint = %q, want evidence-first research workflow", runPayload.ProtocolHint)
+	}
+	if runPayload.VerificationPolicy != "evidence" {
+		t.Fatalf("run verification_policy = %q, want evidence", runPayload.VerificationPolicy)
+	}
+
+	var inspectStdout bytes.Buffer
+	var inspectStderr bytes.Buffer
+	if exitCode := runCLI(context.Background(), []string{"inspect", "--session", runPayload.SessionID, "--db", dbPath, "--json"}, &inspectStdout, &inspectStderr); exitCode != 0 {
+		t.Fatalf("inspect exit code = %d, stderr=%s", exitCode, inspectStderr.String())
+	}
+
+	var inspectPayload inspectJSONOutput
+	if err := json.Unmarshal(inspectStdout.Bytes(), &inspectPayload); err != nil {
+		t.Fatalf("unmarshal inspect output: %v", err)
+	}
+	if inspectPayload.TaskType != domain.TaskCategoryResearch {
+		t.Fatalf("inspect task_type = %q, want %q", inspectPayload.TaskType, domain.TaskCategoryResearch)
+	}
+	if inspectPayload.ProtocolHint != runPayload.ProtocolHint {
+		t.Fatalf("inspect protocol_hint = %q, want %q", inspectPayload.ProtocolHint, runPayload.ProtocolHint)
+	}
+	if inspectPayload.VerificationPolicy != runPayload.VerificationPolicy {
+		t.Fatalf("inspect verification_policy = %q, want %q", inspectPayload.VerificationPolicy, runPayload.VerificationPolicy)
+	}
+
+	sessionStore, err := store.NewSQLiteSessionStore(dbPath)
+	if err != nil {
+		t.Fatalf("open session store: %v", err)
+	}
+	defer func() { _ = sessionStore.Close() }()
+	loadedTask, ok, err := sessionStore.LoadTask(context.Background(), runPayload.SessionID)
+	if err != nil {
+		t.Fatalf("LoadTask() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("LoadTask() ok = false, want true")
+	}
+	if loadedTask.Category != domain.TaskCategoryResearch {
+		t.Fatalf("loaded task category = %q, want %q", loadedTask.Category, domain.TaskCategoryResearch)
+	}
+
+	var resumeStdout bytes.Buffer
+	var resumeStderr bytes.Buffer
+	if exitCode := runCLI(context.Background(), []string{"resume", "--session", runPayload.SessionID, "--db", dbPath}, &resumeStdout, &resumeStderr); exitCode != 0 {
+		t.Fatalf("resume exit code = %d, stderr=%s", exitCode, resumeStderr.String())
+	}
+	if got := resumeStdout.String(); !strings.Contains(got, "Resumed session: "+runPayload.SessionID) {
+		t.Fatalf("resume output missing session heading:\n%s", got)
 	}
 }
 
@@ -334,14 +463,14 @@ func TestNewVerifierFromConfigRespectsVerifyMode(t *testing.T) {
 
 	standardCfg := config.Default()
 	standardCfg.Runtime.VerifyMode = config.VerifyModeStandard
-	if _, ok := newVerifierFromConfig(standardCfg, FakeToolExecutor{}).(*verify.CommandVerifier); !ok {
-		t.Fatalf("verify_mode=standard should use verify.CommandVerifier")
+	if _, ok := newVerifierFromConfig(standardCfg, FakeToolExecutor{}).(*verify.TaskAwareVerifier); !ok {
+		t.Fatalf("verify_mode=standard should use verify.TaskAwareVerifier")
 	}
 
 	strictCfg := config.Default()
 	strictCfg.Runtime.VerifyMode = config.VerifyModeStrict
-	if _, ok := newVerifierFromConfig(strictCfg, FakeToolExecutor{}).(*verify.CommandVerifier); !ok {
-		t.Fatalf("verify_mode=strict should use verify.CommandVerifier")
+	if _, ok := newVerifierFromConfig(strictCfg, FakeToolExecutor{}).(*verify.TaskAwareVerifier); !ok {
+		t.Fatalf("verify_mode=strict should use verify.TaskAwareVerifier")
 	}
 }
 

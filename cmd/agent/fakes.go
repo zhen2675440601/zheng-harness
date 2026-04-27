@@ -55,9 +55,9 @@ type FakeToolExecutor struct{}
 
 func (FakeVerifier) Verify(_ context.Context, _ domain.Task, _ domain.Session, _ domain.Plan, _ []domain.Step, observation domain.Observation) (domain.VerificationResult, error) {
 	if observation.FinalResponse != "" {
-		return domain.VerificationResult{Passed: true, Reason: "final response recorded"}, nil
+		return domain.VerificationResult{Passed: true, Status: domain.VerificationStatusPassed, Reason: "final response recorded"}, nil
 	}
-	return domain.VerificationResult{Passed: false, Reason: "final response missing"}, nil
+	return domain.VerificationResult{Passed: false, Status: domain.VerificationStatusFailed, Reason: "final response missing"}, nil
 }
 
 func (FakeToolExecutor) Execute(_ context.Context, call domain.ToolCall) (domain.ToolResult, error) {
