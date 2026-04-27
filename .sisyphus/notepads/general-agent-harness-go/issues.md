@@ -1,71 +1,11 @@
-## Template
-
-Each entry uses a fixed field order:
-1. Time
-2. Scope
-3. Command
-4. Result
-5. Evidence
-6. Action
-7. Change Ref (required): `CHG-YYYYMMDD-NNN` in `change-log.md`
-
-Entry ID convention:
-- `H-###` for Historical
-- `C-###` for Current
-- `V-###` for Verification
-- IDs are append-only and must not be reused.
-
----
-
-## Historical
-
-### Entry H-001
-- **Time**: 2026-04-26 (Asia/Shanghai)
-- **Scope**: Environment bootstrap
-- **Command**: `go test ./...`, `lsp_diagnostics`, `go test -race ./...`
-- **Result**: Blocked due to missing `go` / `gopls` / `gcc(cgo)` in early sessions.
-- **Evidence**:
-  - `CommandNotFoundException` for `go`
-  - `gopls not installed`
-  - `-race requires cgo` and missing `gcc`
-- **Action**: Completed remediation later in current environment.
-- **Change Ref**: CHG-20260426-004
-
-## Current
-
-### Entry C-001
-- **Time**: 2026-04-26 (Asia/Shanghai)
-- **Scope**: Toolchain status
-- **Command**: `where go`, `where gopls`, `where gcc`, `go env CGO_ENABLED`, `go env CC`
-- **Result**: Toolchain available and configured.
-- **Evidence**:
-  - `go`: `D:\zwlword\go\bin\go.exe`
-  - `gopls`: `C:\Users\justice\go\bin\gopls.exe`
-  - `gcc`: `C:\msys64\ucrt64\bin\gcc.exe`
-  - `CGO_ENABLED=1`, `CC=gcc`
-- **Action**: Keep this as baseline for future verification runs.
-- **Change Ref**: CHG-20260426-004
-
-### Entry C-002
-- **Time**: 2026-04-26 (Asia/Shanghai)
-- **Scope**: Agent-runtime caveat
-- **Command**: `lsp_diagnostics` (agent tool)
-- **Result**: May still report `gopls not installed` due to tool-process PATH refresh lag.
-- **Evidence**: Terminal-level `gopls version` is successful while agent LSP occasionally stale.
-- **Action**: Treat terminal verification as source of truth until agent process refreshes.
-- **Change Ref**: CHG-20260426-004
-
-## Verification
-
-### Entry V-001
-- **Time**: 2026-04-26 (Asia/Shanghai)
-- **Scope**: Full build/test verification
-- **Command**:
-  - `go test ./...`
-  - `go build ./...`
-  - `go test -cover ./...`
-  - `go test -race ./...`
-- **Result**: Passed.
-- **Evidence**: Latest command outputs show all packages successful.
-- **Action**: Mark environment-related issue set as closed.
-- **Change Ref**: CHG-20260426-004
+- Local environment is missing the `go` binary and `gopls`, so `go test ./...` and LSP diagnostics could not be executed in this session despite the skeleton being created.
+- Verification for Task 2 remains host-blocked for the same reason: `go test ./... -run TestRuntimeWithFakes`, `go test ./internal/domain`, and Go LSP diagnostics cannot run until `go` and `gopls` are installed.
+- Task 5 local verification is additionally blocked by a missing `make` binary, so neither `make test` nor the underlying Go checks can be executed on this host.
+- Task 6 targeted config/provider tests and diagnostics are blocked by the same missing `go` and `gopls` tooling, so validation is limited to file creation and source inspection in-session.
+- Task 3 runtime-loop verification is likewise blocked by missing `go` and `gopls`, so the new multi-step tests could not be executed in-session.
+- Task 4 tool-registry verification is blocked by the same missing `go` and `gopls` tooling, so allowed/forbidden execution tests could not run in-session.
+- Task 7 verifier tests and diagnostics are blocked by the same missing `go` and `gopls` tooling, so evidence/policy behavior could not be compiled or executed in-session.
+- Task 8 SQLite persistence tests and diagnostics are blocked by the same missing `go` and `gopls` tooling, so resume and memory-policy flows could not be compiled or executed in-session.
+- Task 9 CLI verification is blocked by the same missing `go` and `gopls` tooling, so command parsing and wiring could not be compiled or exercised in-session.
+- Final import-cycle/F2 verification is now blocked by external environment limits rather than the original cycle itself: `gopls` is still missing, `go test -race ./...` is unsupported on `windows/386`, and full `go build ./...` / `go test ./...` remain blocked by network timeouts fetching `modernc.org/sqlite` from `proxy.golang.org`.
+- Session-local issue resolved in this verification pass: installing `gopls` and using `GOPROXY=https://goproxy.cn,direct` removed the prior diagnostics/build/test/vet verification blockers on this host.
