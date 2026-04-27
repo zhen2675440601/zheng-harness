@@ -1,4 +1,4 @@
-# zheng-harness 项目进度记录
+﻿# zheng-harness 项目进度记录
 
 ## 项目概述
 
@@ -6,9 +6,9 @@
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 📋 计划已就绪**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成**
 
-**已完成 T1-T11 (11/11 核心任务) + 后续功能**
+**已完成 T1-T11 (11/11 核心任务) + Phase 3 T1-T12 + T12 文档收尾**
 
 ### 核心任务 (T1-T11) - 100% 完成
 - ✅ T1: Bootstrap Go 项目骨架
@@ -23,24 +23,51 @@
 - ✅ T10: 基准测试与回放
 - ✅ T11: 文档与 ADR
 
+### Phase 3 通用任务协议任务 - 100% 完成
+
+#### Wave 1: 域协议基础
+- ✅ T1: 为 domain.Task 添加 task_type 字段 (general/coding/research/file_workflow)
+- ✅ T2: 扩展 Action 协议 (respond, tool_call, request_input, complete)
+- ✅ T3: 静态 task-type 注册表 (无插件/动态加载)
+
+#### Wave 2: Runtime 协议集成
+- ✅ T4: TaskAwareVerifier dispatch 契约
+- ✅ T5: Runtime 循环支持 request_input 和 complete 动作短路径处理
+- ✅ T6: provider prompt payload 扩展 (task_type, protocol metadata)
+
+#### Wave 3: CLI 与端到端证明
+- ✅ T7: CLI task-type flags (--task-type, --general-task)
+- ✅ T8: session.config_json 中持久化 task_type 元数据
+- ✅ T9: 非 coding 任务 fixture (research, file_workflow)
+
 ### 后续新增功能 (未编号)
 
 #### 1. 阿里百炼 API 集成
-- **文件**: `internal/llm/dashscope.go`
+- **文件**: ~~internal/llm/dashscope.go~~
 - **说明**: 实现真正的 HTTP API 调用，连接阿里百炼 DashScope
 - **状态**: ✅ 完成
 - **测试**: 单元测试与适配链路验证通过（实网调用依赖有效 API Key）
 
 #### 2. 配置文件支持
-- **文件**: `internal/config/config.go`
+- **文件**: internal/config/config.go
 - **说明**: 支持 JSON 配置文件，加载优先级：CLI > 环境变量 > 配置文件 > 默认值
 - **状态**: ✅ 完成
 
 #### 3. 多厂商 API 配置
-- **文件**: `internal/config/config.go`, `zheng.json`
+- **文件**: internal/config/config.go, zheng.json
 - **说明**: 支持在配置文件中配置多个 provider，可动态切换
 - **配置格式**:
-  ```json
+
+#### 4. Model Adapter
+- **文件**: internal/runtime/model_adapter.go
+- **说明**: 将 llm.Provider 适配为 domain.Model 接口，使 CLI 可使用真实 LLM
+- **状态**: ✅ 完成
+
+#### 5. 跨机器 handoff 协议
+- **说明**: 基于 git 的可移植状态同步机制
+- **文档**: PROGRESS.md Git-Based Continuation 章节
+- **状态**: ✅ 完成
+  `json
   {
     "default_provider": "dashscope",
     "providers": {
@@ -50,13 +77,13 @@
     },
     "runtime": { "max_steps": 8, "step_timeout": "30s", ... }
   }
-  ```
+  `
 - **CLI 使用**:
-  - `--provider dashscope` 或 `--provider openai` 切换 provider
+  - --provider dashscope 或 --provider openai 切换 provider
 - **状态**: ✅ 完成
 
 #### 4. Model Adapter
-- **文件**: `internal/runtime/model_adapter.go`
+- **文件**: internal/runtime/model_adapter.go
 - **说明**: 将 llm.Provider 适配为 domain.Model 接口，使 CLI 可使用真实 LLM
 - **状态**: ✅ 完成
 
@@ -64,26 +91,27 @@
 
 ### 1. Go 环境变量问题
 - **问题**: Windows 环境下 Go 不在 PATH 中
-- **解决**: 使用完整路径 `D:\zwlword\go\bin\go.exe`
+- **解决**: 使用完整路径 D:\zwlword\go\bin\go.exe
 
 ### 2. CLI 参数冲突
 - **问题**: config.Load 解析了 --task 等子命令参数，导致 "flag provided but not defined" 错误
-- **解决**: 添加 `filterConfigArgs` 函数过滤出只保留 config 相关的参数
+- **解决**: 添加 ilterConfigArgs 函数过滤出只保留 config 相关的参数
 
 ### 3. LLM 返回 JSON 被 Markdown 包裹
-- **问题**: DashScope 返回的 JSON 被 ```json ... ``` 包裹，解析失败
-- **解决**: 在 `decodeJSONResponse` 函数中添加 markdown 代码块移除逻辑
+- **问题**: DashScope 返回的 JSON 被 \\\json ... \\\ 包裹，解析失败
+- **解决**: 在 decodeJSONResponse 函数中添加 markdown 代码块移除逻辑
 
 ### 4. 多 provider 配置验证问题
 - **问题**: CLI 指定不存在的 provider 时，系统自动创建空 provider 导致验证通过
-- **解决**: 修改 `upsertSelectedProvider` 和 Load 函数，不再自动创建新 provider
+- **解决**: 修改 upsertSelectedProvider 和 Load 函数，不再自动创建新 provider
 
 ### 5. Provider 与验证器运行时接线不一致
-- **问题**: CLI 早期仅对 DashScope 使用真实 provider，且默认总是使用 `FakeVerifier`，导致 `verify_mode` 行为不完整
+- **问题**: CLI 早期仅对 DashScope 使用真实 provider，且默认总是使用 FakeVerifier，导致 erify_mode 行为不完整
 - **解决**:
-  - `cmd/agent/cli.go` 改为对所有受支持 provider 统一走 `llm.NewProvider + runtime.NewModelAdapter`
-  - 新增 `newVerifierFromConfig`，按 `verify_mode` 选择 verifier（off/standard/strict）
-  - 为 run/resume/inspect 补齐 `--verify-mode` 等配置相关 flag 兼容
+  - cmd/agent/cli.go 改为对所有受支持 provider 统一走 llm.NewProvider + runtime.NewModelAdapter
+  - 新增 
+ewVerifierFromConfig，按 erify_mode 选择 verifier（off/standard/strict）
+  - 为 run/resume/inspect 补齐 --verify-mode 等配置相关 flag 兼容
 
 ## 技术栈
 
@@ -94,7 +122,7 @@
 
 ## 项目结构
 
-```
+`
 zheng-harness/
 ├── cmd/agent/          # CLI 入口
 ├── internal/
@@ -111,22 +139,22 @@ zheng-harness/
 ├── zheng.json          # 运行时配置文件 (敏感)
 ├── zheng.example.json  # 配置文件示例
 └── Makefile            # 开发便捷命令
-```
+`
 
 ## 快速开始
 
 ### 1. 安装 Go 1.26.0
-下载地址: https://go.dev/dl/
+下载地址：https://go.dev/dl/
 
 ### 2. 克隆项目
-```bash
+`ash
 git clone https://github.com/zhen2675440601/zheng-harness.git
 cd zheng-harness
-```
+`
 
 ### 3. 配置 API Key
-编辑 `zheng.json`，填入你的 API key：
-```json
+编辑 zheng.json，填入你的 API key:
+`json
 {
   "default_provider": "dashscope",
   "providers": {
@@ -138,88 +166,110 @@ cd zheng-harness
     }
   }
 }
-```
+`
 
 ### 4. 运行测试
-```bash
+`ash
 go test ./...
 go test -race ./...
-```
+`
 
 ### 5. 运行 Agent
-```bash
+`ash
 go run ./cmd/agent run --task "用中文说你好"
-```
+`
 
 ### 6. 切换 Provider
-```bash
+`ash
 go run ./cmd/agent run --task "hello" --provider openai
 go run ./cmd/agent run --task "hello" --provider deepseek
-```
+`
 
-说明：`openai` / `anthropic` 当前为 stub provider（用于边界与流程验证），`dashscope` 为真实 HTTP 适配实现。
+说明：openai / nthropic 当前为 stub provider（用于边界与流程验证），dashscope 为真实 HTTP 适配实现。
 
 ## Git 操作记录
 
 ### 初始化 (已在其他主机完成)
-```bash
+`ash
 git init
 git add .
 git commit -m "feat: initial commit"
 git remote add origin https://github.com/zhen2675440601/zheng-harness.git
 git push -u origin main
-```
+`
 
 ### Phase 1-2 提交历史
-```bash
+`ash
 # 多 provider LLM 支持与 DashScope 集成
 git add -A
 git commit -m "feat: add multi-provider LLM support with DashScope integration"
 git push origin main
-```
+`
 
 ## 下一步执行入口
 
-**Phase 状态**: Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 📋 计划已就绪
+**Phase 状态**: Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成
 
-Phase 3 计划文件：`.sisyphus/plans/phase-3-general-task-protocol.md`
+所有 Phase 3 计划任务已完成。仓库进入维护与迭代阶段。
 
-### 跨机器继续开发
+### 跨机器 handoff (Git-Based Continuation)
 
-在其他机器上继续 Phase 3 实施：
+在不同机器之间同步工作状态时，遵循以下流程:
 
 1. **git 同步代码**
+
    ```bash
    git pull origin main
    ```
 
 2. **本地配置设置**
-   - 复制 `zheng.example.json` 为 `zheng.json`
+   - 复制 zheng.example.json 为 zheng.json
    - 填入 API key 等敏感配置
    - 确保 Go 1.26.0 已安装
 
-3. **查阅 Phase 3 计划**
-   - 打开 `.sisyphus/plans/phase-3-general-task-protocol.md`
-   - 从 Wave 1 Task 1 开始实施
+3. **查阅 Phase 3 成果**
+   - 查看 .sisyphus/plans/phase-3-general-task-protocol.md 了解已完成任务
+   - 查看 .sisyphus/notepads/phase-3-general-task-protocol/learnings.md 了解关键经验
 
-### Phase 3 核心目标
+4. **可移植状态 vs 本地状态**
 
-将当前 harness 从 coding-leaning agent loop 演进为**通用任务协议运行时**，支持：
-- 通用任务分类与协议元数据
-- 扩展的动作词汇（request_input, complete 等）
-- 任务感知验证合约（research, file_workflow 等非 coding 任务）
-- 静态任务类型注册表（无插件系统）
+   **可移植 (应提交到 git)**:
+   - .sisyphus/plans/ - 任务计划
+   - .sisyphus/notepads/ - 经验记录
+   - docs/ - 架构决策记录
+   - PROGRESS.md - 进度跟踪
+   - README.md - 项目说明
 
-**至少两个非 coding 任务类别的端到端证明**：research 和 file_workflow。
+   **本地机器专属 (不应提交)**:
+   - .sisyphus/boulder.json - 本地运行时状态
+   - zheng.json - 包含 API key 等敏感配置
+   - *.db / *.sqlite - SQLite 数据库文件
+   - agent.db - 默认会话数据库
+
+5. **安全恢复指南**
+   - 拉取代码后不要删除或修改 .sisyphus/boulder.json
+   - 不要假设其他机器上的本地配置路径
+   - 每次换机器都重新运行测试确认环境正常
+   - 使用 git status 确认没有意外修改本地专属文件
+
+#### Phase 3 核心成果
+
+Phase 3 将 harness 从 coding-leaning agent loop 演进为**通用任务协议运行时**, 已完成:
+- 通用任务分类与协议元数据 (general/coding/research/file_workflow)
+- 扩展的动作词汇 (respond, tool_call, request_input, complete)
+- 任务感知验证合约 (research, file_workflow 等非 coding 任务)
+- 静态任务类型注册表 (无插件系统)
+- 两个非 coding 任务类别的端到端证明 (research 和 file_workflow)
 
 ## 注意事项
 
-- `zheng.json` 包含敏感 API key，已加入 `.gitignore`
-- 使用 `zheng.example.json` 作为模板创建新配置
+- zheng.json 包含敏感 API key，已加入 .gitignore
+- 使用 zheng.example.json 作为模板创建新配置
 - 多 provider 配置时，确保选择的 provider 已在配置文件中定义
 
 ---
 
 **最后更新**: 2026-04-26
 **Go 版本**: 1.26.0
-**测试状态**: `go test ./...` / `go test -cover ./...` / `go build ./...` / `go test -race ./...` 已通过
+**测试状态**: go test ./... / go test -cover ./... / go build ./... / go test -race ./... 已通过
+

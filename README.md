@@ -1,14 +1,16 @@
 # zheng-harness
 
-基于 Harness Engineering 思想实现的通用 Agent Harness Go MVP。
+基于 Harness Engineering 思想实现的 **通用 Agent Harness Engine** Go MVP。v1 已完成通用任务协议扩展，支持 coding、research、file-workflow 等多种任务类型的端到端验证。
 
 v1 聚焦 **CLI-first、单进程、单代理、可验证、可恢复、可检查持久记忆**，避免过早平台化。
 
+**定位**: 通用任务执行引擎，支持 coding、research、file workflow 等多种任务类型。
+
 ## 当前进度
 
-**Phase 1 & 2: 已完成 | Phase 3: 计划已就绪**
+**Phase 1 & 2: 已完成 | Phase 3: 已完成 ✅**
 
-核心任务 T1-T11 已全部完成。详细进度请见 [PROGRESS.md](PROGRESS.md)。Phase 3 计划见 [.sisyphus/plans/phase-3-general-task-protocol.md](.sisyphus/plans/phase-3-general-task-protocol.md)。
+核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成。详细进度请见 [PROGRESS.md](PROGRESS.md)。
 
 ## 快速开始
 
