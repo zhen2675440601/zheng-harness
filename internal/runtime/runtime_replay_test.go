@@ -15,6 +15,7 @@ import (
 	"zheng-harness/internal/runtime"
 	"zheng-harness/internal/store"
 	"zheng-harness/internal/tools"
+	"zheng-harness/internal/verify"
 )
 
 type replayFixture struct {
@@ -24,6 +25,7 @@ type replayFixture struct {
 	Engine  replayEngine      `json:"engine"`
 	Store   replayStore       `json:"store"`
 	Tool    replayTool        `json:"tool"`
+	Verifier replayVerifier   `json:"verifier"`
 	Plans   []replayPlan      `json:"plans"`
 	Actions []replayAction    `json:"actions"`
 	Results []replayResult    `json:"tool_results"`
@@ -35,6 +37,7 @@ type replayTask struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 	Goal        string `json:"goal"`
+	Category    string `json:"category"`
 }
 
 type replayEngine struct {
@@ -48,6 +51,10 @@ type replayStore struct {
 }
 
 type replayTool struct {
+	Kind string `json:"kind"`
+}
+
+type replayVerifier struct {
 	Kind string `json:"kind"`
 }
 
@@ -75,11 +82,55 @@ type replayResult struct {
 type replayObservation struct {
 	Summary       string `json:"summary"`
 	FinalResponse string `json:"final_response"`
+	Evidence      *replayEvidence `json:"evidence"`
 }
 
 type replayVerify struct {
 	Passed bool   `json:"passed"`
+	Status string `json:"status"`
 	Reason string `json:"reason"`
+}
+
+type replayEvidence struct {
+	Research     *replayResearchEvidence     `json:"research"`
+	FileWorkflow *replayFileWorkflowEvidence `json:"file_workflow"`
+}
+
+type replayResearchEvidence struct {
+	Sources    []replayEvidenceSource  `json:"sources"`
+	Findings   []replayEvidenceFinding `json:"findings"`
+	Conclusion string                  `json:"conclusion"`
+}
+
+type replayEvidenceSource struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Locator string `json:"locator"`
+	Excerpt string `json:"excerpt"`
+}
+
+type replayEvidenceFinding struct {
+	Claim               string   `json:"claim"`
+	SupportingSourceIDs []string `json:"supporting_source_ids"`
+}
+
+type replayFileWorkflowEvidence struct {
+	Expectations []replayFileExpectation `json:"expectations"`
+	Results      []replayFileResult      `json:"results"`
+	Summary      string                  `json:"summary"`
+}
+
+type replayFileExpectation struct {
+	Path             string   `json:"path"`
+	ShouldExist      bool     `json:"should_exist"`
+	RequiredContents []string `json:"required_contents"`
+}
+
+type replayFileResult struct {
+	Path    string `json:"path"`
+	Exists  bool   `json:"exists"`
+	Content string `json:"content"`
+	Error   string `json:"error"`
 }
 
 func TestRuntimeReplaySuccessFixture(t *testing.T) {
@@ -189,6 +240,99 @@ func TestRuntimeReplayResumeFixture(t *testing.T) {
 	}
 }
 
+func TestRuntimeReplayResearchFixture(t *testing.T) {
+	t.Parallel()
+
+	fixture := loadReplayFixture(t, "research_session.json")
+	engine, sessions, memory, task := newReplayEngine(t, fixture)
+
+	session, plan, steps, err := engine.Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if session.Status != domain.SessionStatusSuccess {
+		t.Fatalf("status = %q, want %q", session.Status, domain.SessionStatusSuccess)
+	}
+	if task.Category != domain.TaskCategoryResearch {
+		t.Fatalf("task category = %q, want %q", task.Category, domain.TaskCategoryResearch)
+	}
+	if plan.ID != fixture.Plans[0].ID {
+		t.Fatalf("plan id = %q, want %q", plan.ID, fixture.Plans[0].ID)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+	if steps[0].Observation.ToolResult != nil {
+		t.Fatal("research fixture should not execute a tool")
+	}
+	if steps[0].Verification.Status != domain.VerificationStatusPassed {
+		t.Fatalf("verification status = %q, want %q", steps[0].Verification.Status, domain.VerificationStatusPassed)
+	}
+	if steps[0].Observation.Evidence == nil || steps[0].Observation.Evidence.Research == nil {
+		t.Fatal("expected research evidence in observation")
+	}
+	if got := steps[0].Observation.Evidence.Research.Conclusion; got != "All reviewed sources agree the protocol supports deterministic research tasks." {
+		t.Fatalf("research conclusion = %q, want fixture conclusion", got)
+	}
+	if len(sessions.savedPlans) != 1 {
+		t.Fatalf("saved plans = %d, want 1", len(sessions.savedPlans))
+	}
+	if len(memory.remembered) != 1 {
+		t.Fatalf("remembered observations = %d, want 1", len(memory.remembered))
+	}
+	if got := sessions.savedSessions[len(sessions.savedSessions)-1].Status; got != domain.SessionStatusSuccess {
+		t.Fatalf("final saved status = %q, want success", got)
+	}
+	if strings.Contains(strings.ToLower(steps[0].Observation.FinalResponse), "tool") {
+		t.Fatalf("final response = %q, want evidence-focused completion", steps[0].Observation.FinalResponse)
+	}
+}
+
+func TestRuntimeReplayFileWorkflowFixture(t *testing.T) {
+	t.Parallel()
+
+	fixture := loadReplayFixture(t, "file_workflow_session.json")
+	engine, sessions, memory, task := newReplayEngine(t, fixture)
+
+	session, plan, steps, err := engine.Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if session.Status != domain.SessionStatusSuccess {
+		t.Fatalf("status = %q, want %q", session.Status, domain.SessionStatusSuccess)
+	}
+	if task.Category != domain.TaskCategoryFileWorkflow {
+		t.Fatalf("task category = %q, want %q", task.Category, domain.TaskCategoryFileWorkflow)
+	}
+	if plan.ID != fixture.Plans[0].ID {
+		t.Fatalf("plan id = %q, want %q", plan.ID, fixture.Plans[0].ID)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+	if steps[0].Observation.ToolResult != nil {
+		t.Fatal("file workflow fixture should not execute a tool")
+	}
+	if steps[0].Verification.Status != domain.VerificationStatusPassed {
+		t.Fatalf("verification status = %q, want %q", steps[0].Verification.Status, domain.VerificationStatusPassed)
+	}
+	if steps[0].Observation.Evidence == nil || steps[0].Observation.Evidence.FileWorkflow == nil {
+		t.Fatal("expected file workflow evidence in observation")
+	}
+	if got := steps[0].Observation.Evidence.FileWorkflow.Results[0].Content; !strings.Contains(got, "status: complete") {
+		t.Fatalf("file workflow result content = %q, want completion marker", got)
+	}
+	if len(sessions.savedPlans) != 1 {
+		t.Fatalf("saved plans = %d, want 1", len(sessions.savedPlans))
+	}
+	if len(memory.remembered) != 1 {
+		t.Fatalf("remembered observations = %d, want 1", len(memory.remembered))
+	}
+	if got := sessions.savedSessions[len(sessions.savedSessions)-1].Status; got != domain.SessionStatusSuccess {
+		t.Fatalf("final saved status = %q, want success", got)
+	}
+}
+
 func TestRuntimeReplayUnsafeToolRejectionFixture(t *testing.T) {
 	t.Parallel()
 
@@ -227,6 +371,8 @@ func TestRuntimeReplayUnsafeToolRejectionFixture(t *testing.T) {
 func BenchmarkRuntimeReplayFixtures(b *testing.B) {
 	fixtures := []string{
 		"success_session.json",
+		"research_session.json",
+		"file_workflow_session.json",
 		"verification_reject.json",
 		"resume_session.json",
 		"unsafe_tool_rejection.json",
@@ -257,7 +403,7 @@ func BenchmarkRuntimeReplayFixtures(b *testing.B) {
 				engine, _, _, task := newReplayEngineForBenchmark(b, fixture)
 				_, _, _, err := engine.Run(context.Background(), task)
 				switch name {
-				case "success_session.json":
+				case "success_session.json", "research_session.json", "file_workflow_session.json":
 					if err != nil {
 						b.Fatalf("run: %v", err)
 					}
@@ -320,7 +466,7 @@ func buildReplayEngine(tb testing.TB, fixture replayFixture) (runtime.Engine, *f
 	toolsExecutor := fixtureToolExecutor(tb, fixture)
 	sessions := &fakeSessionStore{}
 	memory := &fakeMemoryStore{}
-	verifier := &fakeVerifier{results: fixtureVerifications(fixture)}
+	verifier := fixtureVerifier(tb, fixture, toolsExecutor)
 
 	engine := runtime.Engine{
 		Model:          model,
@@ -360,13 +506,14 @@ func buildSQLiteReplayEngine(tb testing.TB, fixture replayFixture) (runtime.Engi
 		tb.Fatalf("NewMemoryStore(): %v", err)
 	}
 	tb.Cleanup(func() { _ = memoryStore.Close() })
+	toolsExecutor := fixtureToolExecutor(tb, fixture)
 
 	engine := runtime.Engine{
 		Model:          &fakeModel{plans: fixturePlans(tb, fixture), actions: fixtureActions(tb, fixture), observations: fixtureObservations(fixture)},
-		Tools:          fixtureToolExecutor(tb, fixture),
+		Tools:          toolsExecutor,
 		Memory:         memoryStore,
 		Sessions:       sessionStore,
-		Verifier:       &fakeVerifier{results: fixtureVerifications(fixture)},
+		Verifier:       fixtureVerifier(tb, fixture, toolsExecutor),
 		Clock:          fixedClock(now),
 		MaxSteps:       fixture.Engine.MaxSteps,
 		MaxRetries:     fixture.Engine.MaxRetries,
@@ -385,6 +532,7 @@ func fixtureTaskAndClock(tb testing.TB, fixture replayFixture) (domain.Task, tim
 		ID:          fixture.Task.ID,
 		Description: fixture.Task.Description,
 		Goal:        fixture.Task.Goal,
+		Category:    domain.TaskCategory(fixture.Task.Category),
 		CreatedAt:   now,
 	}, now
 }
@@ -422,15 +570,77 @@ func fixtureActions(tb testing.TB, fixture replayFixture) []domain.Action {
 func fixtureObservations(fixture replayFixture) []domain.Observation {
 	observations := make([]domain.Observation, 0, len(fixture.Obs))
 	for _, observation := range fixture.Obs {
-		observations = append(observations, domain.Observation{Summary: observation.Summary, FinalResponse: observation.FinalResponse})
+		observations = append(observations, domain.Observation{
+			Summary:       observation.Summary,
+			FinalResponse: observation.FinalResponse,
+			Evidence:      fixtureEvidence(observation.Evidence),
+		})
 	}
 	return observations
+}
+
+func fixtureEvidence(evidence *replayEvidence) *domain.Evidence {
+	if evidence == nil {
+		return nil
+	}
+	result := &domain.Evidence{}
+	if evidence.Research != nil {
+		result.Research = &domain.ResearchEvidence{
+			Conclusion: evidence.Research.Conclusion,
+			Sources:    fixtureResearchSources(evidence.Research.Sources),
+			Findings:   fixtureResearchFindings(evidence.Research.Findings),
+		}
+	}
+	if evidence.FileWorkflow != nil {
+		result.FileWorkflow = &domain.FileWorkflowEvidence{
+			Summary:      evidence.FileWorkflow.Summary,
+			Expectations: fixtureFileExpectations(evidence.FileWorkflow.Expectations),
+			Results:      fixtureFileResults(evidence.FileWorkflow.Results),
+		}
+	}
+	if result.Research == nil && result.FileWorkflow == nil {
+		return nil
+	}
+	return result
+}
+
+func fixtureResearchSources(items []replayEvidenceSource) []domain.EvidenceSource {
+	result := make([]domain.EvidenceSource, 0, len(items))
+	for _, item := range items {
+		result = append(result, domain.EvidenceSource{ID: item.ID, Kind: item.Kind, Locator: item.Locator, Excerpt: item.Excerpt})
+	}
+	return result
+}
+
+func fixtureResearchFindings(items []replayEvidenceFinding) []domain.EvidenceFinding {
+	result := make([]domain.EvidenceFinding, 0, len(items))
+	for _, item := range items {
+		result = append(result, domain.EvidenceFinding{Claim: item.Claim, SupportingSourceIDs: append([]string(nil), item.SupportingSourceIDs...)})
+	}
+	return result
+}
+
+func fixtureFileExpectations(items []replayFileExpectation) []domain.FileExpectation {
+	result := make([]domain.FileExpectation, 0, len(items))
+	for _, item := range items {
+		result = append(result, domain.FileExpectation{Path: item.Path, ShouldExist: item.ShouldExist, RequiredContents: append([]string(nil), item.RequiredContents...)})
+	}
+	return result
+}
+
+func fixtureFileResults(items []replayFileResult) []domain.FileResult {
+	result := make([]domain.FileResult, 0, len(items))
+	for _, item := range items {
+		result = append(result, domain.FileResult{Path: item.Path, Exists: item.Exists, Content: item.Content, Error: item.Error})
+	}
+	return result
 }
 
 func fixtureVerifications(fixture replayFixture) []domain.VerificationResult {
 	results := make([]domain.VerificationResult, 0, len(fixture.Verify))
 	for _, verification := range fixture.Verify {
-		results = append(results, domain.VerificationResult{Passed: verification.Passed, Reason: verification.Reason})
+		status := domain.VerificationStatus(strings.TrimSpace(verification.Status))
+		results = append(results, domain.VerificationResult{Passed: verification.Passed, Status: status, Reason: verification.Reason}.Normalize())
 	}
 	return results
 }
@@ -468,4 +678,21 @@ func fixtureToolExecutor(tb testing.TB, fixture replayFixture) *fakeToolExecutor
 		tb.Fatalf("unsupported tool kind %q", fixture.Tool.Kind)
 		return nil
 	}
+}
+
+func fixtureVerifier(tb testing.TB, fixture replayFixture, executor domain.ToolExecutor) domain.Verifier {
+	tb.Helper()
+	switch fixture.Verifier.Kind {
+	case "", "fake":
+		return &fakeVerifier{results: fixtureVerifications(fixture)}
+	case "task_aware":
+		return runtimeTaskAwareVerifier(executor)
+	default:
+		tb.Fatalf("unsupported verifier kind %q", fixture.Verifier.Kind)
+		return nil
+	}
+}
+
+func runtimeTaskAwareVerifier(executor domain.ToolExecutor) domain.Verifier {
+	return verify.NewTaskAwareVerifier("standard", executor)
 }

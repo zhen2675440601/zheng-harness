@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"zheng-harness/internal/domain"
-	memorypolicy "zheng-harness/internal/memory"
 	"zheng-harness/internal/runtime"
 )
 
@@ -139,6 +138,123 @@ func TestRuntimeCompletesSuccessfulSession(t *testing.T) {
 	}
 	if len(steps) != 1 {
 		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+}
+
+func TestRuntimeRequestInputTransitionsSessionToBlockedInput(t *testing.T) {
+	t.Parallel()
+
+	fixedTime := time.Date(2026, 4, 27, 10, 0, 0, 0, time.UTC)
+	task := domain.Task{
+		ID:          "task-blocked",
+		Description: "collect stakeholder answer",
+		Goal:        "wait for external response",
+		Category:    domain.TaskCategoryResearch,
+		CreatedAt:   fixedTime,
+	}
+
+	sessions := &fakeSessionStore{}
+	verifier := &fakeVerifier{}
+	engine := runtime.Engine{
+		Model: &fakeModel{
+			plans: []domain.Plan{{ID: "plan-1", TaskID: task.ID, Summary: "ask for missing input"}},
+			actions: []domain.Action{{Type: domain.ActionTypeRequestInput, Summary: "need stakeholder input", Response: "Please provide the missing acceptance criteria."}},
+			observations: []domain.Observation{{Summary: "blocked on stakeholder response"}},
+		},
+		Tools:          &fakeToolExecutor{},
+		Memory:         &fakeMemoryStore{},
+		Sessions:       sessions,
+		Verifier:       verifier,
+		Clock:          fixedClock(fixedTime),
+		MaxSteps:       2,
+		MaxRetries:     1,
+		SessionTimeout: time.Minute,
+	}
+
+	session, _, steps, err := engine.Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if session.Status != domain.SessionStatusBlockedInput {
+		t.Fatalf("status = %q, want %q", session.Status, domain.SessionStatusBlockedInput)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+	if got := steps[0].Verification.Status; got != domain.VerificationStatusNotApplicable {
+		t.Fatalf("verification status = %q, want %q", got, domain.VerificationStatusNotApplicable)
+	}
+	if steps[0].Verification.Passed {
+		t.Fatal("request_input verification should not pass")
+	}
+	if steps[0].Observation.ToolResult != nil {
+		t.Fatal("request_input should not masquerade as a tool execution")
+	}
+	if got := verifier.called; got != 0 {
+		t.Fatalf("verifier calls = %d, want 0 for request_input", got)
+	}
+	if got := sessions.savedSessions[len(sessions.savedSessions)-1].Status; got != domain.SessionStatusBlockedInput {
+		t.Fatalf("final saved status = %q, want %q", got, domain.SessionStatusBlockedInput)
+	}
+}
+
+func TestRuntimeCompleteTransitionsThroughSuccessfulPathWithoutToolExecution(t *testing.T) {
+	t.Parallel()
+
+	fixedTime := time.Date(2026, 4, 27, 10, 5, 0, 0, time.UTC)
+	task := domain.Task{
+		ID:          "task-complete",
+		Description: "summarize research findings",
+		Goal:        "deliver final synthesis",
+		Category:    domain.TaskCategoryResearch,
+		CreatedAt:   fixedTime,
+	}
+
+	sessions := &fakeSessionStore{}
+	verifier := &fakeVerifier{}
+	engine := runtime.Engine{
+		Model: &fakeModel{
+			plans: []domain.Plan{{ID: "plan-1", TaskID: task.ID, Summary: "deliver final answer"}},
+			actions: []domain.Action{{Type: domain.ActionTypeComplete, Summary: "final answer ready", Response: "Completed synthesis with cited evidence."}},
+			observations: []domain.Observation{{Summary: "final synthesis prepared"}},
+		},
+		Tools:          &fakeToolExecutor{},
+		Memory:         &fakeMemoryStore{},
+		Sessions:       sessions,
+		Verifier:       verifier,
+		Clock:          fixedClock(fixedTime),
+		MaxSteps:       2,
+		MaxRetries:     1,
+		SessionTimeout: time.Minute,
+	}
+
+	session, _, steps, err := engine.Run(context.Background(), task)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if session.Status != domain.SessionStatusSuccess {
+		t.Fatalf("status = %q, want %q", session.Status, domain.SessionStatusSuccess)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+	if got := steps[0].Verification.Status; got != domain.VerificationStatusPassed {
+		t.Fatalf("verification status = %q, want %q", got, domain.VerificationStatusPassed)
+	}
+	if !steps[0].Verification.Passed {
+		t.Fatal("complete verification should pass")
+	}
+	if steps[0].Observation.ToolResult != nil {
+		t.Fatal("complete should not masquerade as a tool execution")
+	}
+	if got := verifier.called; got != 0 {
+		t.Fatalf("verifier calls = %d, want 0 for complete", got)
+	}
+	if got := steps[0].Observation.FinalResponse; got != "Completed synthesis with cited evidence." {
+		t.Fatalf("final response = %q, want propagated complete response", got)
+	}
+	if got := sessions.savedSessions[len(sessions.savedSessions)-1].Status; got != domain.SessionStatusSuccess {
+		t.Fatalf("final saved status = %q, want %q", got, domain.SessionStatusSuccess)
 	}
 }
 
@@ -586,10 +702,10 @@ func (f *fakeMemoryStore) Remember(_ context.Context, sessionID string, observat
 	}
 	f.remembered = append(f.remembered, domain.MemoryEntry{
 		SessionID: sessionID,
-		Scope:     memorypolicy.ScopeSession,
-		Type:      memorypolicy.TypeSummary,
+		Scope:     domain.MemoryScopeSession,
+		Type:      domain.MemoryTypeSummary,
 		Key:       "runtime_test_remembered",
-		Value:     value,
+		Content:   value,
 		Source:    "runtime_test",
 	})
 	return nil
@@ -614,7 +730,7 @@ func (f *fakeMemoryStore) Recall(_ context.Context, query domain.RecallQuery) ([
 		if query.Type != "" && entry.Type != query.Type {
 			continue
 		}
-		if query.Scope == memorypolicy.ScopeSession && entry.SessionID != query.SessionID {
+		if query.Scope == domain.MemoryScopeSession && entry.SessionID != query.SessionID {
 			continue
 		}
 		if query.Key != "" && entry.Key != query.Key {
