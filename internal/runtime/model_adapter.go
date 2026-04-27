@@ -98,6 +98,7 @@ func (m *ModelAdapter) NextAction(ctx context.Context, task domain.Task, session
 	}
 
 	summary := strings.TrimSpace(payload.Summary)
+	responseText := strings.TrimSpace(payload.Response)
 	switch strings.ToLower(strings.TrimSpace(payload.Type)) {
 	case string(domain.ActionTypeToolCall):
 		if payload.ToolCall == nil {
@@ -128,7 +129,7 @@ func (m *ModelAdapter) NextAction(ctx context.Context, task domain.Task, session
 			},
 		}, nil
 	case "", string(domain.ActionTypeRespond):
-		finalResponse := strings.TrimSpace(payload.Response)
+		finalResponse := responseText
 		if finalResponse == "" {
 			finalResponse = summary
 		}
@@ -142,6 +143,30 @@ func (m *ModelAdapter) NextAction(ctx context.Context, task domain.Task, session
 			Type:     domain.ActionTypeRespond,
 			Summary:  summary,
 			Response: finalResponse,
+		}, nil
+	case string(domain.ActionTypeRequestInput):
+		if summary == "" {
+			summary = responseText
+		}
+		if responseText == "" {
+			return domain.Action{}, fmt.Errorf("request_input action missing response")
+		}
+		return domain.Action{
+			Type:     domain.ActionTypeRequestInput,
+			Summary:  summary,
+			Response: responseText,
+		}, nil
+	case string(domain.ActionTypeComplete):
+		if summary == "" {
+			summary = responseText
+		}
+		if responseText == "" {
+			return domain.Action{}, fmt.Errorf("complete action missing response")
+		}
+		return domain.Action{
+			Type:     domain.ActionTypeComplete,
+			Summary:  summary,
+			Response: responseText,
 		}, nil
 	default:
 		return domain.Action{}, fmt.Errorf("unsupported action type %q", payload.Type)
@@ -189,7 +214,7 @@ func (m *ModelAdapter) generate(ctx context.Context, input string) (llm.Response
 	return response, nil
 }
 
-func decodeJSONResponse(raw string, target any) error {
+func decodeJSONResponse[T any](raw string, target *T) error {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return fmt.Errorf("empty model response")

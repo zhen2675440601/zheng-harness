@@ -10,10 +10,15 @@ import (
 	"time"
 
 	"zheng-harness/internal/domain"
-	memorypolicy "zheng-harness/internal/memory"
 )
 
 var errRetryBudgetExceeded = errors.New("runtime retry budget exceeded")
+
+type iterationOutcome struct {
+	terminal bool
+	status   domain.SessionStatus
+	error    error
+}
 
 type toolInfoLister interface {
 	ListToolInfo() []domain.ToolInfo
@@ -58,6 +63,8 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 	if task.CreatedAt.IsZero() {
 		task.CreatedAt = timestamp
 	}
+	protocol := e.resolveTaskProtocol(task)
+	task = protocol.Task
 
 	session := domain.Session{
 		ID:        task.ID + "-session",
@@ -71,7 +78,7 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 		return domain.Session{}, domain.Plan{}, nil, err
 	}
 
-	plan, err := e.createPlan(ctx, task, session, timestamp)
+	plan, err := e.createPlan(ctx, protocol, session, timestamp)
 	if err != nil {
 		return e.failSession(ctx, session, domain.SessionStatusFatalError, domain.Plan{}, nil, err)
 	}
@@ -89,7 +96,7 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 		}
 
 		stepCtx, cancel := context.WithDeadline(ctx, deadline)
-		action, observation, verification, err := e.executeIteration(stepCtx, task, session, plan, steps)
+		action, observation, verification, err := e.executeIteration(stepCtx, protocol, session, plan, steps)
 		cancel()
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -111,12 +118,13 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 		}
 
 		session.UpdatedAt = now()
-		if verification.Passed {
-			session.Status = domain.SessionStatusSuccess
+		outcome := e.decideIterationOutcome(protocol, action, verification)
+		if outcome.terminal {
+			session.Status = outcome.status
 			if err := e.Sessions.SaveSession(ctx, session); err != nil {
 				return domain.Session{}, domain.Plan{}, nil, err
 			}
-			return session, plan, steps, nil
+			return session, plan, steps, outcome.error
 		}
 
 		if stepIndex == maxSteps {
@@ -128,7 +136,7 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 			return e.failSession(ctx, session, domain.SessionStatusVerificationFailed, plan, steps, errRetryBudgetExceeded)
 		}
 
-		plan, err = e.createPlan(ctx, task, session, now())
+		plan, err = e.createPlan(ctx, protocol, session, now())
 		if err != nil {
 			return e.failSession(ctx, session, domain.SessionStatusFatalError, plan, steps, err)
 		}
@@ -137,16 +145,14 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 	return e.failSession(ctx, session, domain.SessionStatusBudgetExceeded, plan, steps, nil)
 }
 
-func (e Engine) createPlan(ctx context.Context, task domain.Task, session domain.Session, createdAt time.Time) (domain.Plan, error) {
-	tools := e.listToolInfo()
-	memory := e.recallMemory(ctx, task, session)
-	_ = tools
-	plan, err := e.Model.CreatePlan(ctx, task, session, memory)
+func (e Engine) createPlan(ctx context.Context, protocol ResolvedTaskProtocol, session domain.Session, createdAt time.Time) (domain.Plan, error) {
+	memory := e.recallMemory(ctx, protocol.Task, session)
+	plan, err := e.Model.CreatePlan(ctx, protocol.Task, session, memory)
 	if err != nil {
 		return domain.Plan{}, err
 	}
 	if plan.TaskID == "" {
-		plan.TaskID = task.ID
+		plan.TaskID = protocol.Task.ID
 	}
 	if plan.CreatedAt.IsZero() {
 		plan.CreatedAt = createdAt
@@ -157,10 +163,10 @@ func (e Engine) createPlan(ctx context.Context, task domain.Task, session domain
 	return plan, nil
 }
 
-func (e Engine) executeIteration(ctx context.Context, task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step) (domain.Action, domain.Observation, domain.VerificationResult, error) {
+func (e Engine) executeIteration(ctx context.Context, protocol ResolvedTaskProtocol, session domain.Session, plan domain.Plan, steps []domain.Step) (domain.Action, domain.Observation, domain.VerificationResult, error) {
 	tools := e.listToolInfo()
-	memory := e.recallMemory(ctx, task, session)
-	action, err := e.Model.NextAction(ctx, task, session, plan, steps, memory, tools)
+	memory := e.recallMemory(ctx, protocol.Task, session)
+	action, err := e.Model.NextAction(ctx, protocol.Task, session, plan, steps, memory, tools)
 	if err != nil {
 		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
 	}
@@ -174,12 +180,13 @@ func (e Engine) executeIteration(ctx context.Context, task domain.Task, session 
 		result = &executed
 	}
 
-	observation, err := e.Model.Observe(ctx, task, session, plan, action, result)
+	observation, err := e.Model.Observe(ctx, protocol.Task, session, plan, action, result)
 	if err != nil {
 		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
 	}
+	observation = e.normalizeObservationForAction(action, observation)
 
-	verification, err := e.Verifier.Verify(ctx, task, session, plan, steps, observation)
+	verification, err := e.verifyIteration(ctx, protocol, session, plan, steps, action, observation)
 	if err != nil {
 		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
 	}
@@ -187,14 +194,65 @@ func (e Engine) executeIteration(ctx context.Context, task domain.Task, session 
 	return action, observation, verification, nil
 }
 
+func (e Engine) resolveTaskProtocol(task domain.Task) ResolvedTaskProtocol {
+	registry := NewTaskRegistry()
+	return registry.Resolve(task)
+}
+
+func (e Engine) normalizeObservationForAction(action domain.Action, observation domain.Observation) domain.Observation {
+	if strings.TrimSpace(observation.Summary) == "" {
+		observation.Summary = strings.TrimSpace(action.Summary)
+	}
+	if strings.TrimSpace(observation.FinalResponse) == "" {
+		switch action.Type {
+		case domain.ActionTypeRespond, domain.ActionTypeRequestInput, domain.ActionTypeComplete:
+			observation.FinalResponse = strings.TrimSpace(action.Response)
+		}
+	}
+	return observation
+}
+
+func (e Engine) verifyIteration(ctx context.Context, protocol ResolvedTaskProtocol, session domain.Session, plan domain.Plan, steps []domain.Step, action domain.Action, observation domain.Observation) (domain.VerificationResult, error) {
+	switch action.Type {
+	case domain.ActionTypeRequestInput:
+		return domain.VerificationResult{
+			Passed: false,
+			Status: domain.VerificationStatusNotApplicable,
+			Reason: fmt.Sprintf("%s task blocked waiting for external input", protocol.Metadata.TaskType),
+		}, nil
+	case domain.ActionTypeComplete:
+		return domain.VerificationResult{
+			Passed: true,
+			Status: domain.VerificationStatusPassed,
+			Reason: fmt.Sprintf("%s task completed explicitly", protocol.Metadata.TaskType),
+		}, nil
+	default:
+		return e.Verifier.Verify(ctx, protocol.Task, session, plan, steps, observation)
+	}
+}
+
+func (e Engine) decideIterationOutcome(protocol ResolvedTaskProtocol, action domain.Action, verification domain.VerificationResult) iterationOutcome {
+	_ = protocol.Metadata
+	switch action.Type {
+	case domain.ActionTypeRequestInput:
+		return iterationOutcome{terminal: true, status: domain.SessionStatusBlockedInput}
+	case domain.ActionTypeComplete:
+		return iterationOutcome{terminal: true, status: domain.SessionStatusSuccess}
+	}
+	if verification.Passed {
+		return iterationOutcome{terminal: true, status: domain.SessionStatusSuccess}
+	}
+	return iterationOutcome{}
+}
+
 func (e Engine) recallMemory(ctx context.Context, task domain.Task, session domain.Session) []domain.MemoryEntry {
 	const recallLimit = 10
 
 	queries := []domain.RecallQuery{
-		{SessionID: session.ID, Scope: memorypolicy.ScopeSession, Type: memorypolicy.TypeFact, Limit: recallLimit},
-		{SessionID: session.ID, Scope: memorypolicy.ScopeSession, Type: memorypolicy.TypeSummary, Limit: recallLimit},
-		{SessionID: session.ID, Scope: memorypolicy.ScopeProject, Type: memorypolicy.TypeFact, Limit: recallLimit},
-		{SessionID: session.ID, Scope: memorypolicy.ScopeProject, Type: memorypolicy.TypeSummary, Limit: recallLimit},
+		{SessionID: session.ID, Scope: domain.MemoryScopeSession, Type: domain.MemoryTypeFact, Limit: recallLimit},
+		{SessionID: session.ID, Scope: domain.MemoryScopeSession, Type: domain.MemoryTypeSummary, Limit: recallLimit},
+		{SessionID: session.ID, Scope: domain.MemoryScopeProject, Type: domain.MemoryTypeFact, Limit: recallLimit},
+		{SessionID: session.ID, Scope: domain.MemoryScopeProject, Type: domain.MemoryTypeSummary, Limit: recallLimit},
 	}
 
 	combined := make([]domain.MemoryEntry, 0, recallLimit)
@@ -206,7 +264,7 @@ func (e Engine) recallMemory(ctx context.Context, task domain.Task, session doma
 			return nil
 		}
 		for _, entry := range entries {
-			key := fmt.Sprintf("%d|%s|%s|%s|%s|%s", entry.ID, entry.SessionID, entry.Key, entry.Value, entry.Source, entry.Provenance)
+			key := strings.Join([]string{entry.ID, entry.SessionID, entry.Key, entry.Content, entry.Source, entry.Provenance}, "|")
 			if _, ok := seen[key]; ok {
 				continue
 			}
@@ -233,7 +291,7 @@ func (e Engine) recallMemory(ctx context.Context, task domain.Task, session doma
 	}
 	scored := make([]scoredEntry, 0, len(combined))
 	for _, entry := range combined {
-		haystack := strings.ToLower(strings.Join([]string{entry.Key, entry.Value, entry.Source, entry.Provenance}, " "))
+		haystack := strings.ToLower(strings.Join([]string{entry.Key, entry.Content, entry.Source, entry.Provenance}, " "))
 		score := 0
 		for _, keyword := range keywords {
 			if strings.Contains(haystack, keyword) {
