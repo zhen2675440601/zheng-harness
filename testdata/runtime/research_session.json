@@ -73,6 +73,7 @@
   "verifications": [
     {
       "passed": true,
+      "status": "passed",
       "reason": "research evidence is complete and consistent"
     }
   ]

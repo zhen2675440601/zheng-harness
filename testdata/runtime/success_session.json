@@ -4,7 +4,8 @@
   "task": {
     "id": "fixture-success-task",
     "description": "inspect repository",
-    "goal": "produce verified completion"
+    "goal": "produce verified completion",
+    "category": "coding"
   },
   "engine": {
     "max_steps": 2,
@@ -48,6 +49,7 @@
   "verifications": [
     {
       "passed": true,
+      "status": "passed",
       "reason": "deterministic fake accepted output"
     }
   ]

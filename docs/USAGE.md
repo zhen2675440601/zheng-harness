@@ -1,8 +1,8 @@
 # CLI Usage
 
-`zheng-agent` 是一个 **通用 Agent Harness** CLI。v1 只支持本地命令行运行，不包含 Web UI、多代理编排、插件系统或向量数据库。
+`zheng-agent` 是一个 **通用 Agent Harness** CLI。v1 支持 coding、research、file workflow 等多种任务类型，每种任务类型路由到不同的验证器。
 
-本文档仅描述 CLI 使用方法。项目进度见 [PROGRESS.md](../PROGRESS.md)，下一阶段计划见 [.sisyphus/plans/](../.sisyphus/plans/)。
+本文档描述已验证的 CLI 契约。验证证据见 [`validation-matrix.md`](validation-matrix.md)。
 
 ## 命令概览
 
@@ -43,7 +43,7 @@ make test-cover
 ### 基本示例
 
 ```bash
-go run ./cmd/agent run --task "inspect repository and propose next step"
+go run ./cmd/agent run --task "inspect repository and propose next step" --task-type coding
 ```
 
 ### 常用参数
@@ -51,6 +51,7 @@ go run ./cmd/agent run --task "inspect repository and propose next step"
 ```bash
 go run ./cmd/agent run \
   --task "inspect repository and propose next step" \
+  --task-type coding \
   --config ./zheng.json \
   --db ./agent.db \
   --max-steps 8 \
@@ -60,10 +61,22 @@ go run ./cmd/agent run \
 参数说明：
 
 - `--task`：必填，任务描述
+- `--task-type`：可选，任务类型 (`coding`, `research`, `file_workflow`, `general`)，默认为 `general`
 - `--config`：可选，JSON 配置文件路径；默认按 `./zheng.json`、`~/.zheng/config.json` 顺序查找
 - `--db`：SQLite 文件路径，默认 `./agent.db`
 - `--max-steps`：最大步数，必须大于 0
 - `--json`：输出机器可读 JSON
+
+### Task-Type 验证策略
+
+不同任务类型使用不同的验证器：
+
+- `coding`: 运行 `go test`, `go build`, `go vet` 验证代码变更
+- `research`: 验证主张是否有引用的证据支持
+- `file_workflow`: 检查是否产生了预期的文件产物
+- `general`: 基于证据的通用验证（默认）
+
+验证模式通过 `--verify-mode` 控制（`off`, `standard`, `strict`），详见配置章节。
 
 ### 文本输出
 

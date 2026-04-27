@@ -75,6 +75,7 @@
   "verifications": [
     {
       "passed": true,
+      "status": "passed",
       "reason": "file workflow evidence satisfies expected conditions"
     }
   ]

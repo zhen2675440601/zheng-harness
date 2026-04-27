@@ -4,7 +4,8 @@
   "task": {
     "id": "fixture-verify-task",
     "description": "repair failing task",
-    "goal": "verified completion only"
+    "goal": "verified completion only",
+    "category": "coding"
   },
   "engine": {
     "max_steps": 3,
@@ -53,10 +54,12 @@
   "verifications": [
     {
       "passed": false,
+      "status": "failed",
       "reason": "fake verifier rejected unsupported completion claim"
     },
     {
       "passed": false,
+      "status": "failed",
       "reason": "fake verifier rejected repeated unsupported completion claim"
     }
   ]

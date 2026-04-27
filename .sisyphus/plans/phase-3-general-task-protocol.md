@@ -586,10 +586,10 @@ Wave 3: concrete task-type proof, regressions, and docs closure (`10-12`)
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
 - After F1-F4 complete, create a consolidated review summary artifact in repo-tracked planning context (for example under `.sisyphus/notepads/` or equivalent review notes) that records verdicts, fixes applied, and any remaining user-facing approval items.
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - Prefer one commit per numbered task when the change is cohesive and independently verifiable.

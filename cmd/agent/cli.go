@@ -277,7 +277,7 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer cleanup()
-	aliasStore := newSessionAliasStore(sessionStore, sessionID, "")
+	aliasStore := newSessionAliasStore(sessionStore, ctx, sessionID)
 
 	if err := aliasStore.SaveSession(ctx, domain.Session{
 		ID:        sessionID,
@@ -395,7 +395,7 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 		Model:          a.newModel(),
 		Tools:          executor,
 		Memory:         memoryStore,
-		Sessions:       newSessionAliasStore(sessionStore, *sessionID, ""),
+		Sessions:       newSessionAliasStore(sessionStore, ctx, *sessionID),
 		Verifier:       a.newVerifier(executor),
 		MaxSteps:       *maxSteps,
 		MaxRetries:     *maxSteps,
@@ -411,7 +411,7 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 	}
 
 	session, plan, steps, err = engine.Run(runCtx, continuedTask)
-	aliasStore := newSessionAliasStore(sessionStore, *sessionID, "")
+	aliasStore := newSessionAliasStore(sessionStore, ctx, *sessionID)
 	session.ID = *sessionID
 	if ctxErr := runCtx.Err(); ctxErr != nil && session.Status != domain.SessionStatusSuccess {
 		session.Status = domain.SessionStatusInterrupted
@@ -685,24 +685,37 @@ func isTerminalStatus(status domain.SessionStatus) bool {
 }
 
 type sessionAliasStore struct {
-	inner              *store.SQLiteSessionStore
-	desiredSessionID   string
-	generatedSessionID string
+	inner            *store.SQLiteSessionStore
+	persistentCtx    context.Context
+	desiredSessionID string
 }
 
-func newSessionAliasStore(inner *store.SQLiteSessionStore, desiredSessionID, generatedSessionID string) sessionAliasStore {
-	return sessionAliasStore{inner: inner, desiredSessionID: desiredSessionID, generatedSessionID: generatedSessionID}
+func newSessionAliasStore(inner *store.SQLiteSessionStore, persistentCtx context.Context, desiredSessionID string) sessionAliasStore {
+	if persistentCtx == nil {
+		persistentCtx = context.Background()
+	}
+	return sessionAliasStore{inner: inner, persistentCtx: persistentCtx, desiredSessionID: desiredSessionID}
 }
 
 func (s sessionAliasStore) SaveSession(ctx context.Context, session domain.Session) error {
+	ctx = s.contextOrFallback(ctx)
 	session.ID = s.desiredSessionID
 	return s.inner.SaveSession(ctx, session)
 }
 
 func (s sessionAliasStore) SavePlan(ctx context.Context, plan domain.Plan) error {
+	ctx = s.contextOrFallback(ctx)
 	return s.inner.SavePlan(ctx, plan)
 }
 
 func (s sessionAliasStore) AppendStep(ctx context.Context, _ string, step domain.Step) error {
+	ctx = s.contextOrFallback(ctx)
 	return s.inner.AppendStep(ctx, s.desiredSessionID, step)
+}
+
+func (s sessionAliasStore) contextOrFallback(ctx context.Context) context.Context {
+	if ctx == nil {
+		return s.persistentCtx
+	}
+	return context.WithoutCancel(ctx)
 }

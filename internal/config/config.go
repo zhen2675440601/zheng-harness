@@ -168,23 +168,28 @@ func Load(args []string) (Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
+	visitedFlags := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) {
+		visitedFlags[f.Name] = true
+	})
 
-provider = strings.ToLower(strings.TrimSpace(provider))
+	provider = strings.ToLower(strings.TrimSpace(provider))
 	cfg.Provider = provider
 	upsertSelectedProvider(&cfg)
 	// Only update provider settings if provider exists in config
 	// This prevents creating new providers from CLI args alone
 	if _, exists := cfg.Providers[provider]; exists {
 		selected := cfg.Providers[provider]
-		// Only update model/apiKey/baseURL if CLI flag provided a non-empty value.
-		// This preserves values from file/env that are more specific.
-		if model != "" {
+		// Only update provider settings when the corresponding CLI flag was set.
+		// Otherwise provider switches would leak defaults from the previously
+		// selected provider into the newly selected provider.
+		if visitedFlags["model"] {
 			selected.Model = strings.TrimSpace(model)
 		}
-		if apiKey != "" {
+		if visitedFlags["api-key"] {
 			selected.APIKey = strings.TrimSpace(apiKey)
 		}
-		if baseURL != "" {
+		if visitedFlags["base-url"] {
 			selected.BaseURL = strings.TrimSpace(baseURL)
 		}
 		if selected.Type == "" {
@@ -436,7 +441,7 @@ func resolveConfigPath(args []string) (string, bool, error) {
 }
 
 func extractConfigPath(args []string) (string, bool, error) {
-	for i := 0; i < len(args); i++ {
+	for i := range len(args) {
 		arg := args[i]
 		switch {
 		case arg == "-config" || arg == "--config":

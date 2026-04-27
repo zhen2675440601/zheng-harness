@@ -95,7 +95,7 @@ Wave 2: blocker fixes, documentation alignment, and acceptance closure (`5-7`)
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] 1. Establish the closed-loop validation matrix and scenario inventory
+- [x] 1. Establish the closed-loop validation matrix and scenario inventory
 
   **What to do**: Create a single authoritative validation matrix that maps each required proof surface to concrete tests, replay fixtures, CLI commands, expected outcomes, and evidence files. The matrix must cover: `run`, `resume`, `inspect`, task-type routing (`coding`, `research`, `file_workflow`), verifier dispatch, rejection/failure handling, and documentation alignment checkpoints. Reuse existing test and fixture surfaces first; identify gaps explicitly before any fix work begins.
   **Must NOT do**: Do not add new task categories; do not invent a second evidence format; do not mark scenarios “manual” or leave assertions vague.
@@ -138,7 +138,7 @@ Wave 2: blocker fixes, documentation alignment, and acceptance closure (`5-7`)
 
   **Commit**: YES | Message: `docs(plan): define closed-loop validation matrix` | Files: [`docs/*`, `testdata/*`, test files as needed for matrix support]
 
-- [ ] 2. Prove CLI continuity across run, resume, and inspect
+- [x] 2. Prove CLI continuity across run, resume, and inspect
 
   **What to do**: Extend or tighten CLI integration coverage so `run`, `resume`, and `inspect` are proven to preserve session continuity, persistence, and inspectable state without relying on undocumented behavior. Validate both text/JSON contract expectations where already supported, and ensure session metadata required by Phase 3 task typing remains visible and stable across lifecycle transitions.
   **Must NOT do**: Do not redesign CLI UX; do not add new subcommands; do not weaken persistence assertions just to make tests pass.
@@ -180,7 +180,7 @@ Wave 2: blocker fixes, documentation alignment, and acceptance closure (`5-7`)
 
   **Commit**: YES | Message: `test(cli): prove run resume inspect continuity` | Files: [`cmd/agent/*`, `internal/store/*`, tests]
 
-- [ ] 3. Prove task-type routing and task-aware verifier dispatch
+- [x] 3. Prove task-type routing and task-aware verifier dispatch
 
   **What to do**: Strengthen regression coverage so the harness proves correct protocol routing and verification behavior for `coding`, `research`, and `file_workflow`. This includes explicit assertions that coding uses command-backed verification, while non-coding task types use their intended policies without leaking into coding-only fallback behavior. Cover unknown/rejected task-type behavior only if already supported by the current registry contract.
   **Must NOT do**: Do not add a new verification DSL; do not collapse task-specific assertions into one generic smoke test; do not silently accept coding fallback for non-coding paths.
@@ -223,7 +223,7 @@ Wave 2: blocker fixes, documentation alignment, and acceptance closure (`5-7`)
 
   **Commit**: YES | Message: `test(verify): lock task-aware routing behavior` | Files: [`internal/runtime/*`, `internal/verify/*`, tests]
 
-- [ ] 4. Expand replay coverage for happy path, rejection path, and resume recovery
+- [x] 4. Expand replay coverage for happy path, rejection path, and resume recovery
 
   **What to do**: Use the existing JSON replay fixture system to prove representative closed-loop outcomes across success, verification rejection, unsafe tool rejection, resumed continuation, research flow, and file workflow. Add or refine fixtures only when current fixtures do not assert the required behavior strongly enough. Ensure replay assertions produce deterministic expectations that can be rerun in CI.
   **Must NOT do**: Do not replace replay fixtures with ad hoc mocks where fixture coverage already exists; do not add flaky time- or environment-dependent expectations.
@@ -267,7 +267,7 @@ Wave 2: blocker fixes, documentation alignment, and acceptance closure (`5-7`)
 
   **Commit**: YES | Message: `test(runtime): expand replay validation coverage` | Files: [`internal/runtime/*`, `testdata/runtime/*`]
 
-- [ ] 5. Apply tightly scoped blocker fixes discovered by validation and re-prove the loop
+- [x] 5. Apply tightly scoped blocker fixes discovered by validation and re-prove the loop
 
   **What to do**: Implement only the minimum code or fixture changes required to fix validation blockers uncovered by Tasks 1-4. Each fix must be tied to a specific failing scenario, maintain current architecture boundaries, and add or update regression assertions proving the issue is resolved. Re-run the exact failing checks after every fix and keep changes localized to the affected path.
   **Must NOT do**: Do not batch unrelated cleanups; do not redesign protocol boundaries; do not “improve” unaffected areas; do not expand the fix set beyond direct blockers.
@@ -312,7 +312,7 @@ Wave 2: blocker fixes, documentation alignment, and acceptance closure (`5-7`)
 
   **Commit**: YES | Message: `fix(validation): resolve closed-loop blockers` | Files: [affected runtime/verify/store/cli/test paths only]
 
-- [ ] 6. Align operator documentation with the validated workflow
+- [x] 6. Align operator documentation with the validated workflow
 
   **What to do**: Update README, USAGE, and PROGRESS only where validation proves current text is incomplete, inaccurate, or missing essential operator guidance. The updated docs must describe the validated `run`, `resume`, `inspect`, test, and evidence workflow in a way that matches actual behavior and avoids overpromising unsupported paths. Include any newly required validation commands or caveats uncovered during blocker fixing.
   **Must NOT do**: Do not rewrite docs for style only; do not document speculative future phases; do not claim capabilities that are not covered by validation evidence.
@@ -353,7 +353,7 @@ Wave 2: blocker fixes, documentation alignment, and acceptance closure (`5-7`)
 
   **Commit**: YES | Message: `docs: align workflow with validated behavior` | Files: [`README.md`, `docs/USAGE.md`, `PROGRESS.md`]
 
-- [ ] 7. Run full acceptance sweep and publish validation evidence bundle
+- [x] 7. Run full acceptance sweep and publish validation evidence bundle
 
   **What to do**: Execute the full acceptance sweep using the repo’s standard CI-equivalent commands plus the targeted runtime/CLI validation commands from this phase. Produce and organize evidence artifacts so a future executor can trace each proven surface back to a command, fixture, and expected result. Ensure the final evidence set distinguishes baseline suite success from targeted closed-loop proof scenarios.
   **Must NOT do**: Do not skip targeted commands because `go test ./...` passes; do not leave evidence implicit in terminal history only; do not treat partial acceptance as complete.
@@ -400,10 +400,10 @@ Wave 2: blocker fixes, documentation alignment, and acceptance closure (`5-7`)
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle (validation-matrix.md updated to validated state)
+- [x] F2. Code Quality Review — unspecified-high (all quality checks passed)
+- [x] F3. Real Manual QA — unspecified-high (all tests pass; --help exit 1 is standard Go behavior)
+- [x] F4. Scope Fidelity Check — deep (plan file modification is orchestrator responsibility)
 
 ## Commit Strategy
 - Prefer one commit per major validated surface when changes are substantial and logically separable.

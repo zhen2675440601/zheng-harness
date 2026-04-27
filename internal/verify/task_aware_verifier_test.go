@@ -37,7 +37,8 @@ func TestTaskAwareVerifierUsesCommandVerifierForCodingTasks(t *testing.T) {
 func TestTaskAwareVerifierUsesEvidenceVerifierForResearchTasks(t *testing.T) {
 	t.Parallel()
 
-	v := NewTaskAwareVerifier("standard", &stubToolExecutor{})
+	executor := &stubToolExecutor{}
+	v := NewTaskAwareVerifier("standard", executor)
 	result, err := v.Verify(context.Background(), domain.Task{Category: domain.TaskCategoryResearch}, domain.Session{}, domain.Plan{}, nil, domain.Observation{
 		Evidence: &domain.Evidence{Research: &domain.ResearchEvidence{
 			Conclusion: "Both sources agree on the release date.",
@@ -54,12 +55,16 @@ func TestTaskAwareVerifierUsesEvidenceVerifierForResearchTasks(t *testing.T) {
 	if result.Status != domain.VerificationStatusPassed {
 		t.Fatalf("status = %q, want %q", result.Status, domain.VerificationStatusPassed)
 	}
+	if got := len(executor.calls); got != 0 {
+		t.Fatalf("command verifier calls = %d, want 0 for research tasks", got)
+	}
 }
 
 func TestTaskAwareVerifierUsesStateOutputVerifierForFileWorkflowTasks(t *testing.T) {
 	t.Parallel()
 
-	v := NewTaskAwareVerifier("standard", &stubToolExecutor{})
+	executor := &stubToolExecutor{}
+	v := NewTaskAwareVerifier("standard", executor)
 	result, err := v.Verify(context.Background(), domain.Task{Category: domain.TaskCategoryFileWorkflow}, domain.Session{}, domain.Plan{}, nil, domain.Observation{
 		Evidence: &domain.Evidence{FileWorkflow: &domain.FileWorkflowEvidence{
 			Summary: "Updated requested file.",
@@ -75,6 +80,9 @@ func TestTaskAwareVerifierUsesStateOutputVerifierForFileWorkflowTasks(t *testing
 	}
 	if result.Status != domain.VerificationStatusPassed {
 		t.Fatalf("status = %q, want %q", result.Status, domain.VerificationStatusPassed)
+	}
+	if got := len(executor.calls); got != 0 {
+		t.Fatalf("command verifier calls = %d, want 0 for file workflow tasks", got)
 	}
 }
 
@@ -118,6 +126,30 @@ func TestTaskAwareVerifierFallsBackToCompatibilityPolicyWhenTaskMetadataMissing(
 	}
 	if got := len(executor.calls); got != 3 {
 		t.Fatalf("compatibility fallback calls = %d, want 3", got)
+	}
+}
+
+func TestTaskAwareVerifierFallsBackDeterministicallyForUnknownCategory(t *testing.T) {
+	t.Parallel()
+
+	executor := &stubToolExecutor{
+		results: map[string]domain.ToolResult{
+			"go test ./...":  structuredResult("go test ./...", 0, "ok"),
+			"go build ./...": structuredResult("go build ./...", 0, ""),
+			"go vet ./...":   structuredResult("go vet ./...", 0, ""),
+		},
+	}
+
+	v := NewTaskAwareVerifier("standard", executor)
+	result, err := v.Verify(context.Background(), domain.Task{Category: domain.TaskCategory("unsupported")}, domain.Session{}, domain.Plan{}, nil, domain.Observation{})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("expected fallback verification to pass, got %+v", result)
+	}
+	if got := len(executor.calls); got != 3 {
+		t.Fatalf("fallback command verifier calls = %d, want 3", got)
 	}
 }
 

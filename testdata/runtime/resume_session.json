@@ -4,7 +4,8 @@
   "task": {
     "id": "fixture-resume-task",
     "description": "persist and restore a session",
-    "goal": "recover deterministic session state"
+    "goal": "recover deterministic session state",
+    "category": "coding"
   },
   "engine": {
     "max_steps": 2,
@@ -48,6 +49,7 @@
   "verifications": [
     {
       "passed": true,
+      "status": "passed",
       "reason": "persistence replay accepted"
     }
   ]

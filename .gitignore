@@ -26,4 +26,13 @@ coverage.txt
 
 # Sisyphus state (local only)
 .sisyphus/boulder.json
+.sisyphus/evidence/
 ! .sisyphus/plans/
+! .sisyphus/notepads/
+
+# Local config and database (never commit)
+*.db
+*.sqlite
+agent.db
+zheng.json
+! zheng.example.json

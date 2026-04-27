@@ -164,6 +164,12 @@ func TestRuntimeReplaySuccessFixture(t *testing.T) {
 	if steps[0].Verification.Reason != fixture.Verify[0].Reason {
 		t.Fatalf("verification reason = %q, want %q", steps[0].Verification.Reason, fixture.Verify[0].Reason)
 	}
+	if got := steps[0].Verification.Status; got != domain.VerificationStatusPassed {
+		t.Fatalf("verification status = %q, want %q", got, domain.VerificationStatusPassed)
+	}
+	if got := task.Category; got != domain.TaskCategoryCoding {
+		t.Fatalf("task category = %q, want %q", got, domain.TaskCategoryCoding)
+	}
 	if strings.Contains(strings.ToLower(steps[0].Observation.ToolResult.Output), "not allowlisted") {
 		t.Fatal("success fixture unexpectedly exercised unsafe tool rejection")
 	}
@@ -197,6 +203,15 @@ func TestRuntimeReplayVerificationFailureFixture(t *testing.T) {
 	if got := steps[len(steps)-1].Verification.Reason; got != fixture.Verify[1].Reason {
 		t.Fatalf("verification reason = %q, want %q", got, fixture.Verify[1].Reason)
 	}
+	if got := steps[0].Verification.Status; got != domain.VerificationStatusFailed {
+		t.Fatalf("first verification status = %q, want %q", got, domain.VerificationStatusFailed)
+	}
+	if got := steps[len(steps)-1].Verification.Status; got != domain.VerificationStatusFailed {
+		t.Fatalf("final verification status = %q, want %q", got, domain.VerificationStatusFailed)
+	}
+	if got := task.Category; got != domain.TaskCategoryCoding {
+		t.Fatalf("task category = %q, want %q", got, domain.TaskCategoryCoding)
+	}
 	if final := sessions.savedSessions[len(sessions.savedSessions)-1].Status; final != domain.SessionStatusVerificationFailed {
 		t.Fatalf("final saved status = %q, want verification_failed", final)
 	}
@@ -218,6 +233,9 @@ func TestRuntimeReplayResumeFixture(t *testing.T) {
 	if session.Status != domain.SessionStatusSuccess {
 		t.Fatalf("status = %q, want %q", session.Status, domain.SessionStatusSuccess)
 	}
+	if got := task.Category; got != domain.TaskCategoryCoding {
+		t.Fatalf("task category = %q, want %q", got, domain.TaskCategoryCoding)
+	}
 
 	resumedSession, resumedPlan, resumedSteps, err := sessionStore.ResumeSession(context.Background(), session.ID)
 	if err != nil {
@@ -234,6 +252,9 @@ func TestRuntimeReplayResumeFixture(t *testing.T) {
 	}
 	if _, _, _, err := sessionStore.ResumeSession(context.Background(), "missing-session"); err == nil {
 		t.Fatal("expected missing session resume failure")
+	}
+	if got := resumedSteps[0].Verification.Status; got != domain.VerificationStatusPassed {
+		t.Fatalf("resumed verification status = %q, want %q", got, domain.VerificationStatusPassed)
 	}
 	if err := memoryStore.Remember(context.Background(), session.ID, domain.Observation{Summary: "resume check only"}); err != nil {
 		t.Fatalf("Remember(): %v", err)
@@ -273,6 +294,15 @@ func TestRuntimeReplayResearchFixture(t *testing.T) {
 	}
 	if got := steps[0].Observation.Evidence.Research.Conclusion; got != "All reviewed sources agree the protocol supports deterministic research tasks." {
 		t.Fatalf("research conclusion = %q, want fixture conclusion", got)
+	}
+	if len(steps[0].Observation.Evidence.Research.Sources) != 2 {
+		t.Fatalf("research sources = %d, want 2", len(steps[0].Observation.Evidence.Research.Sources))
+	}
+	if got := steps[0].Observation.Evidence.Research.Findings[1].SupportingSourceIDs[0]; got != "src-2" {
+		t.Fatalf("second finding support = %q, want src-2", got)
+	}
+	if got := steps[0].Verification.Reason; got != fixture.Verify[0].Reason {
+		t.Fatalf("verification reason = %q, want %q", got, fixture.Verify[0].Reason)
 	}
 	if len(sessions.savedPlans) != 1 {
 		t.Fatalf("saved plans = %d, want 1", len(sessions.savedPlans))
@@ -322,6 +352,18 @@ func TestRuntimeReplayFileWorkflowFixture(t *testing.T) {
 	if got := steps[0].Observation.Evidence.FileWorkflow.Results[0].Content; !strings.Contains(got, "status: complete") {
 		t.Fatalf("file workflow result content = %q, want completion marker", got)
 	}
+	if len(steps[0].Observation.Evidence.FileWorkflow.Expectations) != 2 {
+		t.Fatalf("file workflow expectations = %d, want 2", len(steps[0].Observation.Evidence.FileWorkflow.Expectations))
+	}
+	if got := steps[0].Observation.Evidence.FileWorkflow.Expectations[0].RequiredContents[1]; got != "owner: runtime" {
+		t.Fatalf("file workflow required content = %q, want owner marker", got)
+	}
+	if got := steps[0].Observation.Evidence.FileWorkflow.Results[1].Exists; got {
+		t.Fatal("archive result should record missing file")
+	}
+	if got := steps[0].Verification.Reason; got != fixture.Verify[0].Reason {
+		t.Fatalf("verification reason = %q, want %q", got, fixture.Verify[0].Reason)
+	}
 	if len(sessions.savedPlans) != 1 {
 		t.Fatalf("saved plans = %d, want 1", len(sessions.savedPlans))
 	}
@@ -349,6 +391,9 @@ func TestRuntimeReplayUnsafeToolRejectionFixture(t *testing.T) {
 	if session.Status != domain.SessionStatusVerificationFailed {
 		t.Fatalf("status = %q, want %q", session.Status, domain.SessionStatusVerificationFailed)
 	}
+	if got := task.Category; got != domain.TaskCategoryCoding {
+		t.Fatalf("task category = %q, want %q", got, domain.TaskCategoryCoding)
+	}
 	if len(steps) != 2 {
 		t.Fatalf("steps = %d, want 2", len(steps))
 	}
@@ -359,12 +404,18 @@ func TestRuntimeReplayUnsafeToolRejectionFixture(t *testing.T) {
 		if !strings.Contains(step.Observation.ToolResult.Error, "not allowlisted") {
 			t.Fatalf("tool error = %q, want allowlist rejection", step.Observation.ToolResult.Error)
 		}
+		if step.Verification.Status != domain.VerificationStatusFailed {
+			t.Fatalf("verification status = %q, want %q", step.Verification.Status, domain.VerificationStatusFailed)
+		}
 	}
 	if final := sessions.savedSessions[len(sessions.savedSessions)-1].Status; final != domain.SessionStatusVerificationFailed {
 		t.Fatalf("final saved status = %q, want verification_failed", final)
 	}
 	if steps[0].Action.ToolCall == nil || steps[0].Action.ToolCall.Name != "exec_command" {
 		t.Fatalf("tool call = %#v, want exec_command", steps[0].Action.ToolCall)
+	}
+	if !strings.Contains(steps[0].Observation.ToolResult.Error, `command "powershell" is not allowlisted`) {
+		t.Fatalf("tool error = %q, want deterministic powershell rejection", steps[0].Observation.ToolResult.Error)
 	}
 }
 

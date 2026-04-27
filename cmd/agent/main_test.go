@@ -133,11 +133,20 @@ func TestResumeAndInspectOutput(t *testing.T) {
 	if inspectPayload.Status != domain.SessionStatusSuccess {
 		t.Fatalf("inspect status = %q, want success", inspectPayload.Status)
 	}
+	if inspectPayload.Plan != runPayload.Plan {
+		t.Fatalf("inspect plan = %q, want %q", inspectPayload.Plan, runPayload.Plan)
+	}
+	if inspectPayload.TerminatedReason != "final response recorded" {
+		t.Fatalf("inspect terminated_reason = %q, want final response recorded", inspectPayload.TerminatedReason)
+	}
 	if inspectPayload.StepCount != 1 {
 		t.Fatalf("inspect step count = %d, want 1", inspectPayload.StepCount)
 	}
 	if len(inspectPayload.StepSummaries) != 1 {
 		t.Fatalf("inspect summaries = %d, want 1", len(inspectPayload.StepSummaries))
+	}
+	if !strings.Contains(inspectPayload.StepSummaries[0], "step 1:") {
+		t.Fatalf("inspect summary = %q, want stable step prefix", inspectPayload.StepSummaries[0])
 	}
 }
 
@@ -203,6 +212,23 @@ func TestRunCommandInterruptPersistsInterruptedSession(t *testing.T) {
 	}
 	if session.Status != domain.SessionStatusInterrupted {
 		t.Fatalf("persisted interrupted status = %q, want interrupted", session.Status)
+	}
+	if strings.TrimSpace(session.TaskID) == "" {
+		t.Fatal("persisted interrupted task id = empty, want stable task id")
+	}
+
+	inspectSession, inspectPlan, inspectSteps, err := sessionStore.ResumeSession(context.Background(), payload.SessionID)
+	if err != nil {
+		t.Fatalf("inspect interrupted session continuity: %v", err)
+	}
+	if inspectSession.ID != payload.SessionID {
+		t.Fatalf("inspect session id = %q, want %q", inspectSession.ID, payload.SessionID)
+	}
+	if strings.TrimSpace(inspectPlan.Summary) == "" {
+		t.Fatal("interrupted plan summary = empty, want persisted plan")
+	}
+	if len(inspectSteps) != 0 {
+		t.Fatalf("interrupted steps = %d, want 0 when canceled before first step", len(inspectSteps))
 	}
 }
 
@@ -441,6 +467,12 @@ func TestRunInspectAndResumePreserveTaskMetadata(t *testing.T) {
 	if loadedTask.Category != domain.TaskCategoryResearch {
 		t.Fatalf("loaded task category = %q, want %q", loadedTask.Category, domain.TaskCategoryResearch)
 	}
+	if loadedTask.ProtocolHint != runPayload.ProtocolHint {
+		t.Fatalf("loaded task protocol_hint = %q, want %q", loadedTask.ProtocolHint, runPayload.ProtocolHint)
+	}
+	if loadedTask.VerificationPolicy != runPayload.VerificationPolicy {
+		t.Fatalf("loaded task verification_policy = %q, want %q", loadedTask.VerificationPolicy, runPayload.VerificationPolicy)
+	}
 
 	var resumeStdout bytes.Buffer
 	var resumeStderr bytes.Buffer
@@ -449,6 +481,9 @@ func TestRunInspectAndResumePreserveTaskMetadata(t *testing.T) {
 	}
 	if got := resumeStdout.String(); !strings.Contains(got, "Resumed session: "+runPayload.SessionID) {
 		t.Fatalf("resume output missing session heading:\n%s", got)
+	}
+	if got := resumeStdout.String(); !strings.Contains(got, "Status: success") || !strings.Contains(got, "Plan: "+inspectPayload.Plan) {
+		t.Fatalf("resume output missing stable continuity fields:\n%s", got)
 	}
 }
 

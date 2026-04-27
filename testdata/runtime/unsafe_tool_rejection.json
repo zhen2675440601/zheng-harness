@@ -4,7 +4,8 @@
   "task": {
     "id": "fixture-unsafe-task",
     "description": "attempt a forbidden command",
-    "goal": "ensure safety policy blocks unsafe tools"
+    "goal": "ensure safety policy blocks unsafe tools",
+    "category": "coding"
   },
   "engine": {
     "max_steps": 3,
@@ -57,10 +58,12 @@
   "verifications": [
     {
       "passed": false,
+      "status": "failed",
       "reason": "unsafe tool usage rejected by fake verifier"
     },
     {
       "passed": false,
+      "status": "failed",
       "reason": "unsafe tool usage rejected by fake verifier again"
     }
   ]

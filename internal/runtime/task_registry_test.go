@@ -32,6 +32,44 @@ func TestTaskRegistryResolveSupportedCategory(t *testing.T) {
 	}
 }
 
+func TestTaskRegistryResolveSupportedCategoriesUseExplicitPolicies(t *testing.T) {
+	t.Parallel()
+
+	registry := NewTaskRegistry()
+	tests := []struct {
+		name   string
+		task   domain.TaskCategory
+		policy string
+	}{
+		{name: "coding", task: domain.TaskCategoryCoding, policy: VerifierPolicyCommand},
+		{name: "research", task: domain.TaskCategoryResearch, policy: VerifierPolicyEvidence},
+		{name: "file workflow", task: domain.TaskCategoryFileWorkflow, policy: VerifierPolicyChecklist},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			resolved := registry.Resolve(domain.Task{ID: "task-" + string(tc.task), Category: tc.task})
+			if resolved.Task.Category != tc.task {
+				t.Fatalf("resolved category = %q, want %q", resolved.Task.Category, tc.task)
+			}
+			if resolved.Metadata.TaskType != tc.task {
+				t.Fatalf("metadata task type = %q, want %q", resolved.Metadata.TaskType, tc.task)
+			}
+			if resolved.Metadata.VerifierPolicy != tc.policy {
+				t.Fatalf("metadata verifier policy = %q, want %q", resolved.Metadata.VerifierPolicy, tc.policy)
+			}
+			if resolved.Task.VerificationPolicy != tc.policy {
+				t.Fatalf("task verification policy = %q, want %q", resolved.Task.VerificationPolicy, tc.policy)
+			}
+			if resolved.Task.ProtocolHint == "" {
+				t.Fatal("protocol hint = empty, want compatibility default")
+			}
+		})
+	}
+}
+
 func TestTaskRegistryResolveUnknownCategoryUsesDeterministicFallback(t *testing.T) {
 	t.Parallel()
 
