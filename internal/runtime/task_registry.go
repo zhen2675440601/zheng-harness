@@ -10,16 +10,16 @@ import (
 const (
 	VerifierPolicyCommand  = "command"
 	VerifierPolicyEvidence = "evidence"
-	VerifierPolicyChecklist = "checklist"
+	VerifierPolicyStateOutput = "state_output"
 )
 
-// TaskProtocolCompatibilityDefaults defines additive defaults for older task payloads.
+// TaskProtocolCompatibilityDefaults 为旧任务载荷定义增量默认值。
 type TaskProtocolCompatibilityDefaults struct {
 	ProtocolHint       string
 	VerificationPolicy string
 }
 
-// TaskProtocolMetadata describes the runtime protocol shape for a supported task type.
+// TaskProtocolMetadata 描述受支持任务类型的运行时协议形态。
 type TaskProtocolMetadata struct {
 	TaskType            domain.TaskCategory
 	VerifierPolicy      string
@@ -27,13 +27,13 @@ type TaskProtocolMetadata struct {
 	CompatibilityDefaults TaskProtocolCompatibilityDefaults
 }
 
-// ResolvedTaskProtocol contains normalized task data plus explicit protocol metadata.
+// ResolvedTaskProtocol 包含标准化任务数据以及显式协议元数据。
 type ResolvedTaskProtocol struct {
 	Task     domain.Task
 	Metadata TaskProtocolMetadata
 }
 
-// TaskRegistry resolves supported task types to static protocol metadata.
+// TaskRegistry 将受支持的任务类型解析为静态协议元数据。
 type TaskRegistry struct {
 	entries   map[domain.TaskCategory]TaskProtocolMetadata
 	fallback  TaskProtocolMetadata
@@ -67,14 +67,14 @@ var staticTaskProtocolMetadata = map[domain.TaskCategory]TaskProtocolMetadata{
 	},
 	domain.TaskCategoryFileWorkflow: {
 		TaskType:       domain.TaskCategoryFileWorkflow,
-		VerifierPolicy: VerifierPolicyChecklist,
+		VerifierPolicy: VerifierPolicyStateOutput,
 		PromptingHints: []string{
 			"Track file inputs, outputs, and handoff state explicitly.",
 			"Confirm artifact paths and completion criteria before finishing.",
 		},
 		CompatibilityDefaults: TaskProtocolCompatibilityDefaults{
 			ProtocolHint:       "artifact-tracking file workflow",
-			VerificationPolicy: VerifierPolicyChecklist,
+			VerificationPolicy: VerifierPolicyStateOutput,
 		},
 	},
 }
@@ -91,7 +91,7 @@ var defaultFallbackTaskProtocolMetadata = TaskProtocolMetadata{
 	},
 }
 
-// NewTaskRegistry constructs the static task-type registry.
+// NewTaskRegistry 构造静态任务类型注册表。
 func NewTaskRegistry() *TaskRegistry {
 	entries := make(map[domain.TaskCategory]TaskProtocolMetadata, len(staticTaskProtocolMetadata))
 	order := make([]domain.TaskCategory, 0, len(staticTaskProtocolMetadata))
@@ -109,7 +109,7 @@ func NewTaskRegistry() *TaskRegistry {
 	}
 }
 
-// ResolveCategory returns explicit metadata for a task type or the deterministic fallback.
+// ResolveCategory 返回某任务类型的显式元数据，或返回确定性的回退结果。
 func (r *TaskRegistry) ResolveCategory(taskType domain.TaskCategory) TaskProtocolMetadata {
 	if r == nil {
 		return cloneTaskProtocolMetadata(defaultFallbackTaskProtocolMetadata)
@@ -120,7 +120,7 @@ func (r *TaskRegistry) ResolveCategory(taskType domain.TaskCategory) TaskProtoco
 	return cloneTaskProtocolMetadata(r.fallback)
 }
 
-// Resolve normalizes a task and applies compatibility defaults from the registry boundary.
+// Resolve 标准化任务，并应用注册表边界定义的兼容默认值。
 func (r *TaskRegistry) Resolve(task domain.Task) ResolvedTaskProtocol {
 	metadata := r.ResolveCategory(task.CategoryOrDefault())
 	resolved := task.Normalize()
@@ -134,7 +134,7 @@ func (r *TaskRegistry) Resolve(task domain.Task) ResolvedTaskProtocol {
 	return ResolvedTaskProtocol{Task: resolved, Metadata: metadata}
 }
 
-// List returns task protocol metadata in stable task-type order.
+// List 按稳定的任务类型顺序返回任务协议元数据。
 func (r *TaskRegistry) List() []TaskProtocolMetadata {
 	if r == nil {
 		return nil

@@ -43,7 +43,7 @@ func TestTaskRegistryResolveSupportedCategoriesUseExplicitPolicies(t *testing.T)
 	}{
 		{name: "coding", task: domain.TaskCategoryCoding, policy: VerifierPolicyCommand},
 		{name: "research", task: domain.TaskCategoryResearch, policy: VerifierPolicyEvidence},
-		{name: "file workflow", task: domain.TaskCategoryFileWorkflow, policy: VerifierPolicyChecklist},
+		{name: "file workflow", task: domain.TaskCategoryFileWorkflow, policy: VerifierPolicyStateOutput},
 	}
 
 	for _, tc := range tests {
