@@ -8,10 +8,10 @@ import (
 	"zheng-harness/internal/domain"
 )
 
-// ResearchVerifier evaluates structured evidence completeness and consistency.
+// ResearchVerifier 评估结构化证据的完整性与一致性。
 type ResearchVerifier struct{}
 
-// Verify implements domain.Verifier.
+// Verify 实现 domain.Verifier。
 func (ResearchVerifier) Verify(_ context.Context, _ domain.Task, _ domain.Session, _ domain.Plan, _ []domain.Step, observation domain.Observation) (domain.VerificationResult, error) {
 	if observation.ToolResult != nil && strings.TrimSpace(observation.ToolResult.Error) != "" {
 		return domain.VerificationResult{Passed: false, Status: domain.VerificationStatusFailed, Reason: observation.ToolResult.Error}, nil
@@ -29,10 +29,10 @@ func (ResearchVerifier) Verify(_ context.Context, _ domain.Task, _ domain.Sessio
 	return domain.VerificationResult{Passed: true, Status: domain.VerificationStatusPassed, Reason: "research evidence is complete and consistent"}, nil
 }
 
-// FileWorkflowVerifier validates expected file-state and result conditions.
+// FileWorkflowVerifier 验证预期的文件状态与结果条件。
 type FileWorkflowVerifier struct{}
 
-// Verify implements domain.Verifier.
+// Verify 实现 domain.Verifier。
 func (FileWorkflowVerifier) Verify(_ context.Context, _ domain.Task, _ domain.Session, _ domain.Plan, _ []domain.Step, observation domain.Observation) (domain.VerificationResult, error) {
 	if observation.ToolResult != nil && strings.TrimSpace(observation.ToolResult.Error) != "" {
 		return domain.VerificationResult{Passed: false, Status: domain.VerificationStatusFailed, Reason: observation.ToolResult.Error}, nil

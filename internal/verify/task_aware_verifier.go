@@ -14,13 +14,13 @@ const (
 	PolicyStateOutput   = "state_output"
 )
 
-// TaskAwareVerifier dispatches verification by task metadata first, then compatibility fallback.
+// TaskAwareVerifier 优先依据任务元数据分发验证，其次再使用兼容性回退。
 type TaskAwareVerifier struct {
 	fallbackPolicy string
 	strategies     map[string]domain.Verifier
 }
 
-// NewTaskAwareVerifier constructs a central task-aware verification boundary.
+// NewTaskAwareVerifier 构造统一的任务感知型验证边界。
 func NewTaskAwareVerifier(mode string, executor domain.ToolExecutor) *TaskAwareVerifier {
 	fallbackPolicy := PolicyCommandBacked
 	switch strings.ToLower(strings.TrimSpace(mode)) {
@@ -40,7 +40,7 @@ func NewTaskAwareVerifier(mode string, executor domain.ToolExecutor) *TaskAwareV
 	}
 }
 
-// Verify implements domain.Verifier.
+// Verify 实现 domain.Verifier。
 func (v *TaskAwareVerifier) Verify(ctx context.Context, task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step, observation domain.Observation) (domain.VerificationResult, error) {
 	policy := v.selectPolicy(task)
 	strategy, ok := v.strategies[policy]
@@ -76,7 +76,7 @@ func normalizeVerificationPolicy(raw string) string {
 		return PolicyCommandBacked
 	case PolicyEvidenceBased, "evidence_based", "research":
 		return PolicyEvidenceBased
-	case PolicyStateOutput, "state", "output", "file_workflow", "file-workflow":
+	case PolicyStateOutput, "state", "output", "checklist", "file_workflow", "file-workflow":
 		return PolicyStateOutput
 	default:
 		return ""

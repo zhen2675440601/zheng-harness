@@ -9,7 +9,7 @@ const (
 	VerificationContradiction = "contradiction"
 )
 
-// CheckKind identifies a built-in verification action.
+// CheckKind 标识一种内置验证动作。
 type CheckKind string
 
 const (
@@ -19,13 +19,13 @@ const (
 	CheckKindLint     CheckKind = "lint"
 )
 
-// Policy controls which checks run and how many failed verifications are tolerated.
+// Policy 控制应执行哪些检查以及可容忍多少次验证失败。
 type Policy struct {
 	MaxFailures int
 	Checks      []CheckKind
 }
 
-// DefaultPolicy provides bounded verification behavior for the MVP.
+// DefaultPolicy 为 MVP 提供有界的验证行为。
 func DefaultPolicy() Policy {
 	return Policy{
 		MaxFailures: 2,
@@ -33,7 +33,7 @@ func DefaultPolicy() Policy {
 	}
 }
 
-// CorrectionInstruction returns a bounded remediation message for the failure.
+// CorrectionInstruction 为失败返回一条有界的修正说明。
 func CorrectionInstruction(category string, failedChecks []string) string {
 	base := "gather stronger evidence and retry within budget"
 	if len(failedChecks) > 0 {

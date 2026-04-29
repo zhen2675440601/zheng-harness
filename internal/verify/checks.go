@@ -10,20 +10,20 @@ import (
 	"zheng-harness/internal/domain"
 )
 
-// CheckResult captures the outcome of one verification action.
+// CheckResult 记录一次验证动作的结果。
 type CheckResult struct {
 	Name    string
 	Passed  bool
 	Details string
 }
 
-// Check executes one verification action.
+// Check 执行一次验证动作。
 type Check interface {
 	Name() string
 	Run(ctx context.Context, task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step, observation domain.Observation) CheckResult
 }
 
-// EvidenceCheck ensures the observation contains inspectable evidence.
+// EvidenceCheck 确保观察结果包含可检查的证据。
 type EvidenceCheck struct{}
 
 func (EvidenceCheck) Name() string { return string(CheckKindEvidence) }
@@ -43,7 +43,7 @@ func (EvidenceCheck) Run(_ context.Context, _ domain.Task, _ domain.Session, _ d
 	return CheckResult{Name: string(CheckKindEvidence), Passed: false, Details: "no evidence attached to completion claim"}
 }
 
-// TestCheck validates evidence from a claimed test run.
+// TestCheck 验证声称的测试运行所提供的证据。
 type TestCheck struct{}
 
 func (TestCheck) Name() string { return string(CheckKindTest) }
@@ -56,7 +56,7 @@ func (TestCheck) Run(_ context.Context, _ domain.Task, _ domain.Session, _ domai
 	return CheckResult{Name: string(CheckKindTest), Passed: false, Details: "missing passing test evidence"}
 }
 
-// BuildCheck validates evidence from a claimed build run.
+// BuildCheck 验证声称的构建运行所提供的证据。
 type BuildCheck struct{}
 
 func (BuildCheck) Name() string { return string(CheckKindBuild) }
@@ -69,7 +69,7 @@ func (BuildCheck) Run(_ context.Context, _ domain.Task, _ domain.Session, _ doma
 	return CheckResult{Name: string(CheckKindBuild), Passed: false, Details: "missing successful build evidence"}
 }
 
-// LintCheck validates evidence from a claimed lint run.
+// LintCheck 验证声称的 lint 运行所提供的证据。
 type LintCheck struct{}
 
 func (LintCheck) Name() string { return string(CheckKindLint) }
@@ -82,7 +82,7 @@ func (LintCheck) Run(_ context.Context, _ domain.Task, _ domain.Session, _ domai
 	return CheckResult{Name: string(CheckKindLint), Passed: false, Details: "missing successful lint evidence"}
 }
 
-// FileExistsCheck verifies that a file path referenced by evidence exists.
+// FileExistsCheck 验证证据中引用的文件路径确实存在。
 type FileExistsCheck struct {
 	Path string
 }
@@ -144,19 +144,21 @@ func parseCommandRecords(text string) []commandRecord {
 	records := make([]commandRecord, 0)
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
-		if !strings.HasPrefix(line, "command:") {
+		lowerLine := strings.ToLower(line)
+		if !strings.HasPrefix(lowerLine, "command:") {
 			continue
 		}
 
-		command := strings.TrimSpace(strings.TrimPrefix(line, "command:"))
+		command := strings.TrimSpace(line[len("command:"):])
 		exitCode := -1
 		for j := i + 1; j < len(lines); j++ {
 			next := strings.TrimSpace(lines[j])
-			if strings.HasPrefix(next, "command:") {
+			lowerNext := strings.ToLower(next)
+			if strings.HasPrefix(lowerNext, "command:") {
 				break
 			}
-			if strings.HasPrefix(next, "exit_code:") {
-				rawCode := strings.TrimSpace(strings.TrimPrefix(next, "exit_code:"))
+			if strings.HasPrefix(lowerNext, "exit_code:") {
+				rawCode := strings.TrimSpace(next[len("exit_code:"):])
 				parsed, err := strconv.Atoi(rawCode)
 				if err == nil {
 					exitCode = parsed

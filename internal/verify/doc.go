@@ -1,4 +1,4 @@
-// Package verify contains verification and self-correction support.
+// Package verify 包含验证与自我纠正支持逻辑。
 //
-// Ownership: this package owns verification workflows used by the runtime.
+// 归属：该包负责运行时使用的验证工作流。
 package verify

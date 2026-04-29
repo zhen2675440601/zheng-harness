@@ -12,18 +12,18 @@ import (
 
 const defaultVerificationCommandTimeout = 60 * time.Second
 
-// CommandVerifier executes real verification commands through a ToolExecutor.
+// CommandVerifier 通过 ToolExecutor 执行真实的验证命令。
 type CommandVerifier struct {
 	executor domain.ToolExecutor
 	timeout  time.Duration
 }
 
-// NewCommandVerifier constructs a command-backed verifier.
+// NewCommandVerifier 构造一个由命令驱动的验证器。
 func NewCommandVerifier(executor domain.ToolExecutor) *CommandVerifier {
 	return &CommandVerifier{executor: executor, timeout: defaultVerificationCommandTimeout}
 }
 
-// Verify implements domain.Verifier.
+// Verify 实现 domain.Verifier。
 func (v *CommandVerifier) Verify(ctx context.Context, _ domain.Task, _ domain.Session, _ domain.Plan, _ []domain.Step, _ domain.Observation) (domain.VerificationResult, error) {
 	if v.executor == nil {
 		return domain.VerificationResult{Passed: false, Status: domain.VerificationStatusFailed, Reason: "verification command not available"}, nil

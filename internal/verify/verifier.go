@@ -8,13 +8,13 @@ import (
 	"zheng-harness/internal/domain"
 )
 
-// Verifier applies policy-driven evidence checks and bounded self-correction.
+// Verifier 应用策略驱动的证据检查与有界自我纠正。
 type Verifier struct {
 	policy Policy
 	checks map[CheckKind]Check
 }
 
-// NewVerifier constructs a verifier with built-in checks.
+// NewVerifier 构造一个带内置检查项的验证器。
 func NewVerifier(policy Policy) *Verifier {
 	defaults := DefaultPolicy()
 	if policy.MaxFailures <= 0 {
@@ -34,7 +34,7 @@ func NewVerifier(policy Policy) *Verifier {
 	}
 }
 
-// Verify implements domain.Verifier.
+// Verify 实现 domain.Verifier。
 func (v *Verifier) Verify(ctx context.Context, task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step, observation domain.Observation) (domain.VerificationResult, error) {
 	failedChecks := make([]string, 0)
 	category := VerificationSuccess
