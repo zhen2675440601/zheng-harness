@@ -8,18 +8,18 @@ import (
 	"zheng-harness/internal/domain"
 )
 
-// Registry stores built-in tool definitions.
+// Registry 存储内置工具定义。
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]ToolDefinition
 }
 
-// NewRegistry constructs an empty tool registry.
+// NewRegistry 构造一个空的工具注册表。
 func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]ToolDefinition)}
 }
 
-// Register adds a tool definition and rejects duplicates or incomplete entries.
+// Register 添加工具定义，并拒绝重复或不完整的条目。
 func (r *Registry) Register(def ToolDefinition) error {
 	if def.Name == "" {
 		return fmt.Errorf("tool name must not be empty")
@@ -46,7 +46,7 @@ func (r *Registry) Register(def ToolDefinition) error {
 	return nil
 }
 
-// Get looks up a tool definition by name.
+// Get 按名称查找工具定义。
 func (r *Registry) Get(name string) (ToolDefinition, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -54,7 +54,7 @@ func (r *Registry) Get(name string) (ToolDefinition, bool) {
 	return def, ok
 }
 
-// List returns tool definitions in stable name order.
+// List 按稳定名称顺序返回工具定义。
 func (r *Registry) List() []ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -68,7 +68,7 @@ func (r *Registry) List() []ToolDefinition {
 	return items
 }
 
-// ListToolInfo returns prompt-facing tool definitions in stable name order.
+// ListToolInfo 按稳定名称顺序返回面向提示词的工具定义。
 func (r *Registry) ListToolInfo() []domain.ToolInfo {
 	defs := r.List()
 	infos := make([]domain.ToolInfo, 0, len(defs))

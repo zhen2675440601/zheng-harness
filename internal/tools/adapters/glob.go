@@ -13,12 +13,12 @@ import (
 	"zheng-harness/internal/domain"
 )
 
-// GlobAdapter performs workspace-scoped file pattern matching.
+// GlobAdapter 执行限定在工作区范围内的文件模式匹配。
 type GlobAdapter struct {
 	workspaceRoot string
 }
 
-// NewGlobAdapter constructs a workspace-scoped glob adapter.
+// NewGlobAdapter 构造一个工作区范围内的 glob 适配器。
 func NewGlobAdapter(workspaceRoot string) GlobAdapter {
 	return GlobAdapter{workspaceRoot: workspaceRoot}
 }

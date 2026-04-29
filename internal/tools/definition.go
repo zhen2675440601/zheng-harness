@@ -7,19 +7,19 @@ import (
 	"zheng-harness/internal/domain"
 )
 
-// SafetyLevel classifies the risk profile of a tool.
-type SafetyLevel string
+// SafetyLevel 对工具的风险级别进行分类。
+type SafetyLevel = domain.SafetyLevel
 
 const (
-	SafetyLevelLow    SafetyLevel = "low"
-	SafetyLevelMedium SafetyLevel = "medium"
-	SafetyLevelHigh   SafetyLevel = "high"
+	SafetyLevelLow    = domain.SafetyLevelLow
+	SafetyLevelMedium = domain.SafetyLevelMedium
+	SafetyLevelHigh   = domain.SafetyLevelHigh
 )
 
-// ToolHandler executes a validated tool call.
+// ToolHandler 执行已通过校验的工具调用。
 type ToolHandler func(ctx context.Context, call domain.ToolCall) (domain.ToolResult, error)
 
-// ToolDefinition describes one built-in tool and its execution contract.
+// ToolDefinition 描述一个内置工具及其执行契约。
 type ToolDefinition struct {
 	Name           string
 	Description    string

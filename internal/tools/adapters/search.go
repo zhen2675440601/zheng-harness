@@ -16,12 +16,12 @@ import (
 	"zheng-harness/internal/domain"
 )
 
-// SearchAdapter performs simple textual searches in workspace files.
+// SearchAdapter 在工作区文件中执行简单的文本搜索。
 type SearchAdapter struct {
 	workspaceRoot string
 }
 
-// NewSearchAdapter constructs a workspace-scoped search adapter.
+// NewSearchAdapter 构造一个工作区范围内的搜索适配器。
 func NewSearchAdapter(workspaceRoot string) SearchAdapter {
 	return SearchAdapter{workspaceRoot: workspaceRoot}
 }

@@ -15,12 +15,12 @@ import (
 	"github.com/kballard/go-shellquote"
 )
 
-// ShellAdapter executes allowlisted commands in the workspace.
+// ShellAdapter 在工作区内执行允许列表中的命令。
 type ShellAdapter struct {
 	workspaceRoot string
 }
 
-// NewShellAdapter constructs a shell adapter scoped to a workspace.
+// NewShellAdapter 构造一个限定在工作区内的 shell 适配器。
 func NewShellAdapter(workspaceRoot string) ShellAdapter {
 	return ShellAdapter{workspaceRoot: workspaceRoot}
 }

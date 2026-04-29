@@ -70,8 +70,8 @@ func TestAllowedToolExecution(t *testing.T) {
 	}
 
 	defs := executor.Registry().List()
-	if len(defs) != 7 {
-		t.Fatalf("definition count = %d, want 7", len(defs))
+	if len(defs) != 10 {
+		t.Fatalf("definition count = %d, want 10", len(defs))
 	}
 }
 
@@ -545,18 +545,18 @@ func TestExecCommandParsesQuotedArguments(t *testing.T) {
 		t.Fatalf("new executor: %v", err)
 	}
 
-	// Test that quoted arguments are preserved as single arguments
-	// git commit -m "hello world" should split correctly
+	// 测试被引号包裹的参数会被保留为单个参数。
+	// git commit -m "hello world" 应被正确拆分。
 	result, err := executor.Execute(context.Background(), domain.ToolCall{
 		Name:  "exec_command",
 		Input: `git commit -m "hello world"`,
 	})
-	// git may fail if not in a repo, but the command parsing should work
-	// The error should NOT be about parsing the command
+	// 如果不在仓库中，git 可能执行失败，但命令解析本身应正常工作。
+	// 错误原因不应是命令解析失败。
 	if err != nil && strings.Contains(err.Error(), "failed to parse command") {
 		t.Fatalf("unexpected parse error: %v", err)
 	}
-	// Verify the command was attempted (not rejected for parsing)
+	// 验证命令确实已尝试执行（而不是因解析被拒绝）。
 	if !strings.Contains(result.Output, "COMMAND: git commit -m \"hello world\"") {
 		t.Fatalf("output should contain the raw command, got: %s", result.Output)
 	}
@@ -615,12 +615,12 @@ func TestExecCommandBackwardCompatibility(t *testing.T) {
 		t.Fatalf("new executor: %v", err)
 	}
 
-	// Simple command with glob pattern should still work
+	// 带 glob 模式的简单命令仍应正常工作。
 	result, err := executor.Execute(context.Background(), domain.ToolCall{
 		Name:  "exec_command",
 		Input: "go test ./...",
 	})
-	// go test ./... may fail if there are no test files, but parsing should work
+	// 如果没有测试文件，go test ./... 可能失败，但解析本身应正常工作。
 	if err != nil && strings.Contains(err.Error(), "failed to parse command") {
 		t.Fatalf("unexpected parse error: %v", err)
 	}
@@ -638,7 +638,7 @@ func TestExecCommandRejectsMalformedInput(t *testing.T) {
 		t.Fatalf("new executor: %v", err)
 	}
 
-	// Unmatched quote should return an error, not panic
+	// 引号不匹配时应返回错误，而不是触发 panic。
 	_, err = executor.Execute(context.Background(), domain.ToolCall{
 		Name:  "exec_command",
 		Input: `git commit -m "unmatched`,
@@ -646,7 +646,7 @@ func TestExecCommandRejectsMalformedInput(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for unmatched quote, got nil")
 	}
-	// The error should be a parsing error, not a safety policy rejection
+	// 错误应为解析错误，而不是安全策略拒绝。
 	if !strings.Contains(err.Error(), "parse command") && !strings.Contains(err.Error(), "unclosed") {
 		t.Fatalf("expected parse error, got: %v", err)
 	}

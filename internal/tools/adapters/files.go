@@ -11,12 +11,12 @@ import (
 	"zheng-harness/internal/domain"
 )
 
-// FileAdapter executes file and directory operations under a fixed workspace root.
+// FileAdapter 在固定工作区根目录下执行文件与目录操作。
 type FileAdapter struct {
 	workspaceRoot string
 }
 
-// NewFileAdapter constructs a file adapter scoped to one workspace.
+// NewFileAdapter 构造一个限定在单个工作区内的文件适配器。
 func NewFileAdapter(workspaceRoot string) FileAdapter {
 	return FileAdapter{workspaceRoot: workspaceRoot}
 }

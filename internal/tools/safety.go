@@ -7,18 +7,22 @@ import (
 	"strings"
 
 	"zheng-harness/internal/domain"
+	"zheng-harness/internal/tools/adapters"
 )
 
-// SafetyPolicy enforces local tool usage boundaries.
+// SafetyPolicy 强制执行本地工具使用边界。
 type SafetyPolicy struct {
 	WorkspaceRoot     string
 	AllowedCommands   []string
 	DeniedCommands    []string
+	AllowedDomains    []string
 	AllowedReadRoots  []string
 	AllowedWriteRoots []string
+	AllowedPluginPaths []string
+	PluginCapabilities []string
 }
 
-// Validate checks whether the tool call respects the configured safety policy.
+// Validate 检查工具调用是否遵循配置好的安全策略。
 func (p SafetyPolicy) Validate(def ToolDefinition, call domain.ToolCall) error {
 	root, err := filepath.Abs(p.WorkspaceRoot)
 	if err != nil {
@@ -35,6 +39,8 @@ func (p SafetyPolicy) Validate(def ToolDefinition, call domain.ToolCall) error {
 	case "write_file", "edit_file":
 		pathPart := strings.SplitN(call.Input, "\n", 2)[0]
 		return p.validatePathPayload(strings.TrimSpace(pathPart), root, p.writeRoots(root))
+	case "web_fetch":
+		return p.validateWebFetchPayload(call.Input)
 	case "exec_command":
 		return p.validateCommand(call.Input)
 	default:
@@ -66,7 +72,7 @@ func (p SafetyPolicy) validateCommand(raw string) error {
 	if command == "" {
 		return fmt.Errorf("command must not be empty")
 	}
-	// Reject command chaining operators before any parsing
+	// 在执行任何解析前拒绝命令链式操作符。
 	if strings.Contains(command, "&&") || strings.Contains(command, "||") || strings.Contains(command, ";") {
 		return fmt.Errorf("command chaining (&&, ||, ;) is not allowed")
 	}
@@ -92,6 +98,89 @@ func (p SafetyPolicy) validateCommand(raw string) error {
 	return fmt.Errorf("command %q is not allowlisted", executable)
 }
 
+func (p SafetyPolicy) validateWebFetchPayload(raw string) error {
+	input, err := adapters.ParseWebFetchInput(raw)
+	if err != nil {
+		return err
+	}
+	parsed, err := adapters.ValidateWebFetchURL(input.URL)
+	if err != nil {
+		return err
+	}
+	return p.validateAllowedDomain(parsed)
+}
+
+// ValidatePluginPath 检查插件路径是否落在允许的插件目录内。
+func (p SafetyPolicy) ValidatePluginPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("plugin path must not be empty")
+	}
+	if len(p.AllowedPluginPaths) == 0 {
+		return nil
+	}
+	if p.WorkspaceRoot == "" {
+		return fmt.Errorf("workspace root must not be empty")
+	}
+	root, err := filepath.Abs(p.WorkspaceRoot)
+	if err != nil {
+		return fmt.Errorf("resolve workspace root: %w", err)
+	}
+	return p.validatePathPayload(path, root, p.pluginRoots(root))
+}
+
+// DeclaresPluginCapability reports whether the capability is declared by policy.
+// Empty declarations mean capabilities are currently unrestricted.
+func (p SafetyPolicy) DeclaresPluginCapability(capability string) bool {
+	if len(p.PluginCapabilities) == 0 {
+		return true
+	}
+	trimmed := strings.TrimSpace(capability)
+	if trimmed == "" {
+		return false
+	}
+	for _, candidate := range p.PluginCapabilities {
+		if strings.EqualFold(strings.TrimSpace(candidate), trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidatePluginCapabilities checks whether every declared plugin capability is allowed by policy.
+// When policy capabilities are configured, plugins must declare at least one capability and every
+// declared capability must be present in the allowlist.
+func (p SafetyPolicy) ValidatePluginCapabilities(capabilities []string) error {
+	if len(p.PluginCapabilities) == 0 {
+		return nil
+	}
+	if len(capabilities) == 0 {
+		return fmt.Errorf("plugin capabilities must be declared")
+	}
+	for _, capability := range capabilities {
+		trimmed := strings.TrimSpace(capability)
+		if trimmed == "" {
+			return fmt.Errorf("plugin capability must not be empty")
+		}
+		if !p.DeclaresPluginCapability(trimmed) {
+			return fmt.Errorf("plugin capability %q is not allowed", trimmed)
+		}
+	}
+	return nil
+}
+
+func (p SafetyPolicy) validateAllowedDomain(parsed interface{ Hostname() string }) error {
+	if len(p.AllowedDomains) == 0 {
+		return nil
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	for _, domain := range p.AllowedDomains {
+		if strings.EqualFold(strings.TrimSpace(domain), hostname) {
+			return nil
+		}
+	}
+	return fmt.Errorf("web_fetch domain %q is not allowed", parsed.Hostname())
+}
+
 func (p SafetyPolicy) readRoots(workspaceRoot string) []string {
 	if len(p.AllowedReadRoots) == 0 {
 		return []string{workspaceRoot}
@@ -104,6 +193,10 @@ func (p SafetyPolicy) writeRoots(workspaceRoot string) []string {
 		return []string{workspaceRoot}
 	}
 	return p.resolveRoots(workspaceRoot, p.AllowedWriteRoots)
+}
+
+func (p SafetyPolicy) pluginRoots(workspaceRoot string) []string {
+	return p.resolveRoots(workspaceRoot, p.AllowedPluginPaths)
 }
 
 func (p SafetyPolicy) resolveRoots(workspaceRoot string, roots []string) []string {

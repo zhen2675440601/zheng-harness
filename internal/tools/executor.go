@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 	"zheng-harness/internal/tools/adapters"
 )
 
-// Executor routes tool calls through the registry and safety policy.
+// Executor 通过注册表与安全策略分发工具调用。
 type Executor struct {
 	registry *Registry
 	policy   SafetyPolicy
@@ -31,24 +32,24 @@ type executorOptions struct {
 	extraAllowedCommands []string
 }
 
-// ExecutorOption customizes executor safety settings.
+// ExecutorOption 用于定制执行器的安全设置。
 type ExecutorOption func(*executorOptions)
 
-// WithAllowedCommands overrides the default command allowlist when non-empty.
+// WithAllowedCommands 在非空时覆盖默认命令允许列表。
 func WithAllowedCommands(commands []string) ExecutorOption {
 	return func(opts *executorOptions) {
 		opts.allowedCommands = append([]string(nil), commands...)
 	}
 }
 
-// WithExtraAllowedCommands appends commands to the active allowlist.
+// WithExtraAllowedCommands 将命令追加到当前允许列表。
 func WithExtraAllowedCommands(commands []string) ExecutorOption {
 	return func(opts *executorOptions) {
 		opts.extraAllowedCommands = append(opts.extraAllowedCommands, commands...)
 	}
 }
 
-// NewExecutor constructs a tool executor and registers the built-in toolset.
+// NewExecutor 构造工具执行器并注册内置工具集。
 func NewExecutor(workspaceRoot string, options ...ExecutorOption) (*Executor, error) {
 	registry := NewRegistry()
 	opts := executorOptions{}
@@ -61,11 +62,12 @@ func NewExecutor(workspaceRoot string, options ...ExecutorOption) (*Executor, er
 		WorkspaceRoot:     workspaceRoot,
 		AllowedCommands:   buildAllowedCommands(opts.allowedCommands, opts.extraAllowedCommands),
 		DeniedCommands:    []string{"rm"},
+		AllowedDomains:    nil,
 		AllowedReadRoots:  []string{"."},
 		AllowedWriteRoots: []string{"."},
 	}
 
-	for _, def := range builtinDefinitions(workspaceRoot) {
+	for _, def := range builtinDefinitions(workspaceRoot, policy) {
 		if err := registry.Register(def); err != nil {
 			return nil, err
 		}
@@ -74,7 +76,7 @@ func NewExecutor(workspaceRoot string, options ...ExecutorOption) (*Executor, er
 	return &Executor{registry: registry, policy: policy}, nil
 }
 
-// Execute implements domain.ToolExecutor.
+// Execute 实现 domain.ToolExecutor。
 func (e *Executor) Execute(ctx context.Context, call domain.ToolCall) (domain.ToolResult, error) {
 	def, ok := e.registry.Get(call.Name)
 	if !ok {
@@ -94,21 +96,24 @@ func (e *Executor) Execute(ctx context.Context, call domain.ToolCall) (domain.To
 	return def.Handler(execCtx, call)
 }
 
-// Registry exposes the registered definitions for inspection/testing.
+// Registry 暴露已注册定义，便于检查与测试。
 func (e *Executor) Registry() *Registry {
 	return e.registry
 }
 
-// Policy exposes the executor safety policy for tests and wiring.
+// Policy 暴露执行器的安全策略，便于测试与装配。
 func (e *Executor) Policy() SafetyPolicy {
 	return e.policy
 }
 
-func builtinDefinitions(workspaceRoot string) []ToolDefinition {
+func builtinDefinitions(workspaceRoot string, policy SafetyPolicy) []ToolDefinition {
 	fileAdapter := adapters.NewFileAdapter(workspaceRoot)
 	globAdapter := adapters.NewGlobAdapter(workspaceRoot)
+	codeSearchAdapter := adapters.NewCodeSearchAdapter(workspaceRoot)
 	searchAdapter := adapters.NewSearchAdapter(workspaceRoot)
 	shellAdapter := adapters.NewShellAdapter(workspaceRoot)
+	interactiveAdapter := adapters.NewInteractiveAdapter(os.Stdin, os.Stdout)
+	webAdapter := adapters.NewWebAdapter(policy.AllowedDomains)
 
 	return []ToolDefinition{
 		{
@@ -152,12 +157,36 @@ func builtinDefinitions(workspaceRoot string) []ToolDefinition {
 			Handler:        globAdapter.Glob,
 		},
 		{
+			Name:           "code_search",
+			Description:    "Search source code with language-aware filtering",
+			Schema:         `{"pattern": "string (required)", "language": "string (optional)", "output_mode": "string (optional: content|files_with_matches|count)", "max_results": "int (optional, default 50)"}`,
+			DefaultTimeout: 10 * time.Second,
+			SafetyLevel:    SafetyLevelLow,
+			Handler:        codeSearchAdapter.Search,
+		},
+		{
 			Name:           "grep_search",
 			Description:    "Search text under the workspace",
 			Schema:         `{"type":"string","description":"search term or regular expression literal"}`,
 			DefaultTimeout: 5 * time.Second,
 			SafetyLevel:    SafetyLevelLow,
 			Handler:        searchAdapter.Grep,
+		},
+		{
+			Name:           "ask_user",
+			Description:    "Prompt the CLI user for interactive input",
+			Schema:         `{"question": "string (required)", "options": "[]string (optional)"}`,
+			DefaultTimeout: 300 * time.Second,
+			SafetyLevel:    SafetyLevelLow,
+			Handler:        interactiveAdapter.AskUser,
+		},
+		{
+			Name:           "web_fetch",
+			Description:    "Fetch a web page over HTTP or HTTPS",
+			Schema:         `{"url": "string (required)", "max_length": "int (optional, default 10000)"}`,
+			DefaultTimeout: 15 * time.Second,
+			SafetyLevel:    SafetyLevelMedium,
+			Handler:        webAdapter.Fetch,
 		},
 		{
 			Name:           "exec_command",
