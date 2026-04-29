@@ -2,7 +2,7 @@ package domain
 
 import "encoding/json"
 
-// VerificationStatus captures the normalized verification outcome taxonomy.
+// VerificationStatus 记录标准化的验证结果分类。
 type VerificationStatus string
 
 const (
@@ -11,14 +11,14 @@ const (
 	VerificationStatusNotApplicable VerificationStatus = "not_applicable"
 )
 
-// VerificationResult captures whether the last observation satisfies checks.
+// VerificationResult 记录最近一次观察是否通过各项检查。
 type VerificationResult struct {
 	Passed bool
 	Status VerificationStatus
 	Reason string
 }
 
-// StatusOrDefault backfills additive verification status for older payloads.
+// StatusOrDefault 为旧载荷补齐增量验证状态。
 func (r VerificationResult) StatusOrDefault() VerificationStatus {
 	if r.Status != "" {
 		return r.Status
@@ -29,19 +29,19 @@ func (r VerificationResult) StatusOrDefault() VerificationStatus {
 	return VerificationStatusFailed
 }
 
-// Normalize applies additive compatibility defaults for verification metadata.
+// Normalize 为验证元数据应用增量兼容默认值。
 func (r VerificationResult) Normalize() VerificationResult {
 	r.Status = r.StatusOrDefault()
 	return r
 }
 
-// MarshalJSON emits normalized verification status while preserving field names.
+// MarshalJSON 在保留字段名的同时输出标准化验证状态。
 func (r VerificationResult) MarshalJSON() ([]byte, error) {
 	type verificationJSON VerificationResult
 	return json.Marshal(verificationJSON(r.Normalize()))
 }
 
-// UnmarshalJSON backfills additive verification metadata for older persisted payloads.
+// UnmarshalJSON 为旧的持久化载荷补齐增量验证元数据。
 func (r *VerificationResult) UnmarshalJSON(data []byte) error {
 	type verificationJSON VerificationResult
 	var decoded verificationJSON

@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-// MemoryScope defines the persistence boundary for a memory entry.
+// MemoryScope 定义记忆条目的持久化边界。
 type MemoryScope string
 
 const (
@@ -11,7 +11,7 @@ const (
 	MemoryScopeGlobal  MemoryScope = "global"
 )
 
-// MemoryType classifies the kind of memory content.
+// MemoryType 对记忆内容的类型进行分类。
 type MemoryType string
 
 const (
@@ -20,7 +20,7 @@ const (
 	MemoryTypeSummary    MemoryType = "summary"
 )
 
-// MemoryEntry is a persisted memory record with provenance and confidence.
+// MemoryEntry 是带有来源与置信度的持久化记忆记录。
 type MemoryEntry struct {
 	ID         string
 	SessionID  string
@@ -37,7 +37,7 @@ type MemoryEntry struct {
 	ExpiresAt  *time.Time
 }
 
-// RecallQuery filters memory entries during recall.
+// RecallQuery 用于在回忆时筛选记忆条目。
 type RecallQuery struct {
 	SessionID string
 	Scope     MemoryScope

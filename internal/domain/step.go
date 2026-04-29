@@ -1,6 +1,6 @@
 package domain
 
-// Step records one action/observation/verification cycle in a session.
+// Step 记录会话中的一次动作/观察/验证循环。
 type Step struct {
 	Index        int
 	Action       Action

@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-// SessionStatus describes the current runtime state for a task execution.
+// SessionStatus 描述任务执行时当前的运行时状态。
 type SessionStatus string
 
 const (
@@ -16,7 +16,7 @@ const (
 	SessionStatusInterrupted        SessionStatus = "interrupted"
 )
 
-// Session tracks a single runtime attempt for a task.
+// Session 跟踪任务的一次运行时尝试。
 type Session struct {
 	ID        string
 	TaskID    string

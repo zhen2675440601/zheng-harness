@@ -1,6 +1,6 @@
 package domain
 
-// Observation is the normalized runtime understanding after an action.
+// Observation 是动作执行后运行时的标准化理解结果。
 type Observation struct {
 	Summary       string
 	ToolResult    *ToolResult
@@ -8,20 +8,20 @@ type Observation struct {
 	Evidence      *Evidence
 }
 
-// Evidence captures structured verifier input for non-coding tasks.
+// Evidence 为非编码任务记录结构化的验证器输入。
 type Evidence struct {
 	Research     *ResearchEvidence
 	FileWorkflow *FileWorkflowEvidence
 }
 
-// ResearchEvidence records inspectable support for research-oriented conclusions.
+// ResearchEvidence 记录面向研究结论的可检查支撑证据。
 type ResearchEvidence struct {
 	Sources    []EvidenceSource
 	Findings   []EvidenceFinding
 	Conclusion string
 }
 
-// EvidenceSource identifies one concrete source used during research.
+// EvidenceSource 标识研究过程中使用的一个具体来源。
 type EvidenceSource struct {
 	ID      string
 	Kind    string
@@ -29,27 +29,27 @@ type EvidenceSource struct {
 	Excerpt string
 }
 
-// EvidenceFinding records one claim and the sources that support it.
+// EvidenceFinding 记录一条结论及其支撑来源。
 type EvidenceFinding struct {
 	Claim             string
 	SupportingSourceIDs []string
 }
 
-// FileWorkflowEvidence records expected and observed file workflow outcomes.
+// FileWorkflowEvidence 记录文件工作流中预期与实际观察到的结果。
 type FileWorkflowEvidence struct {
 	Expectations []FileExpectation
 	Results      []FileResult
 	Summary      string
 }
 
-// FileExpectation describes one expected file-state condition.
+// FileExpectation 描述一个预期的文件状态条件。
 type FileExpectation struct {
 	Path             string
 	ShouldExist      bool
 	RequiredContents []string
 }
 
-// FileResult describes the observed outcome for one file path.
+// FileResult 描述某个文件路径的实际观察结果。
 type FileResult struct {
 	Path    string
 	Exists  bool
