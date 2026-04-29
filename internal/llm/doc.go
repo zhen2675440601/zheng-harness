@@ -1,5 +1,5 @@
-// Package llm contains language-model adapter placeholders.
+// Package llm 包含语言模型适配器占位实现。
 //
-// Ownership: this package is reserved for model-facing infrastructure adapters,
-// not domain contracts.
+// 归属：该包保留给面向模型的基础设施适配器使用，
+// 不承载领域契约。
 package llm

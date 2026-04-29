@@ -2,8 +2,8 @@ package llm
 
 import "strings"
 
-// buildStubJSONOutput keeps stub providers compatible with ModelAdapter's
-// JSON contract so provider switching does not break runtime parsing.
+// buildStubJSONOutput 使 stub provider 与 ModelAdapter 的 JSON 契约保持兼容，
+// 从而避免切换 provider 时破坏运行时解析。
 func buildStubJSONOutput(request Request) string {
 	input := strings.ToLower(strings.TrimSpace(request.Input))
 

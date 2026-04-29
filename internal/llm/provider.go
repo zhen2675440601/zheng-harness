@@ -5,29 +5,31 @@ import (
 	"fmt"
 
 	"zheng-harness/internal/config"
+	"zheng-harness/internal/domain"
 )
 
-// Request is the provider-agnostic inference request shape.
+// Request 是与 provider 无关的推理请求结构。
 type Request struct {
 	SystemPrompt string
 	Input        string
 }
 
-// Response is the normalized provider output returned to runtime callers.
+// Response 是返回给运行时调用方的标准化 provider 输出。
 type Response struct {
 	Model      string
 	Output     string
 	StopReason string
 }
 
-// Provider hides provider SDK details from domain/runtime packages.
+// Provider 将 provider SDK 的细节与 domain/runtime 包隔离开。
 type Provider interface {
 	Name() string
 	Model() string
 	Generate(ctx context.Context, request Request) (Response, error)
+	Stream(ctx context.Context, request Request, emit func(domain.StreamingEvent) error) error
 }
 
-// ProviderConfig is the narrow config dependency required by LLM adapters.
+// ProviderConfig 是 LLM 适配器所需的精简配置依赖。
 type ProviderConfig interface {
 	GetModel() string
 	GetProvider() string
@@ -36,7 +38,7 @@ type ProviderConfig interface {
 	GetBaseURL() string
 }
 
-// NewProvider selects an SDK-hiding provider adapter from config.
+// NewProvider 根据配置选择一个隐藏 SDK 细节的 provider 适配器。
 func NewProvider(cfg ProviderConfig) (Provider, error) {
 	switch cfg.GetProviderType() {
 	case config.ProviderOpenAI:
