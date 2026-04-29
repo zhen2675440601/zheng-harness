@@ -10,7 +10,7 @@ import (
 
 const maxToolSchemaLength = 1200
 
-// BuildCreatePlanInput renders the provider input for plan generation.
+// BuildCreatePlanInput 生成用于创建计划的 provider 输入。
 func BuildCreatePlanInput(task domain.Task, session domain.Session, memory []domain.MemoryEntry) string {
 	payload := map[string]any{
 		"operation": "create_plan",
@@ -33,7 +33,7 @@ func BuildCreatePlanInput(task domain.Task, session domain.Session, memory []dom
 	return mustMarshalPrompt(payload)
 }
 
-// BuildNextActionInput renders the provider input for action selection.
+// BuildNextActionInput 生成用于选择下一步动作的 provider 输入。
 func BuildNextActionInput(task domain.Task, session domain.Session, plan domain.Plan, steps []domain.Step, tools []domain.ToolInfo, memory []domain.MemoryEntry) string {
 	history := make([]map[string]any, 0, len(steps))
 	for _, step := range steps {
@@ -81,7 +81,7 @@ func BuildNextActionInput(task domain.Task, session domain.Session, plan domain.
 	return mustMarshalPrompt(payload)
 }
 
-// BuildObserveInput renders the provider input for post-action observation.
+// BuildObserveInput 生成用于动作执行后观察的 provider 输入。
 func BuildObserveInput(task domain.Task, session domain.Session, plan domain.Plan, action domain.Action, result *domain.ToolResult) string {
 	toolResult := map[string]any(nil)
 	if result != nil {

@@ -56,8 +56,8 @@ func TestValidConfigAndProviderBoundary(t *testing.T) {
 }
 
 func TestLoadUsesLegacyConfigFileWithFlagOverrides(t *testing.T) {
-	// Note: No environment variables set, so config file values take precedence
-	// then CLI flags override
+	// 注意：未设置环境变量，因此优先使用配置文件中的值。
+	// 然后再由 CLI 标志覆盖。
 
 	configPath := filepath.Join(t.TempDir(), "zheng.json")
 	if err := os.WriteFile(configPath, []byte(`{
@@ -186,7 +186,9 @@ func TestLoadUsesRuntimeAllowedCommandsOverride(t *testing.T) {
 			"step_timeout": "40s",
 			"memory_limit_mb": 300,
 			"verify_mode": "standard",
-			"allowed_commands": ["go"]
+			"allowed_commands": ["go"],
+			"allowed_plugin_paths": ["plugins", " vendor/plugins "],
+			"plugin_capabilities": ["filesystem.read", " web.fetch "]
 		}
 	}`), 0o600); err != nil {
 		t.Fatalf("write config file: %v", err)
@@ -199,6 +201,12 @@ func TestLoadUsesRuntimeAllowedCommandsOverride(t *testing.T) {
 
 	if len(cfg.Runtime.AllowedCommands) != 1 || cfg.Runtime.AllowedCommands[0] != "go" {
 		t.Fatalf("allowed commands = %v, want [go]", cfg.Runtime.AllowedCommands)
+	}
+	if len(cfg.Runtime.AllowedPluginPaths) != 2 || cfg.Runtime.AllowedPluginPaths[0] != "plugins" || cfg.Runtime.AllowedPluginPaths[1] != "vendor/plugins" {
+		t.Fatalf("allowed plugin paths = %v, want [plugins vendor/plugins]", cfg.Runtime.AllowedPluginPaths)
+	}
+	if len(cfg.Runtime.PluginCapabilities) != 2 || cfg.Runtime.PluginCapabilities[0] != "filesystem.read" || cfg.Runtime.PluginCapabilities[1] != "web.fetch" {
+		t.Fatalf("plugin capabilities = %v, want [filesystem.read web.fetch]", cfg.Runtime.PluginCapabilities)
 	}
 }
 
@@ -227,7 +235,7 @@ func TestLoadUsesDefaultConfigPath(t *testing.T) {
 		_ = os.Chdir(wd)
 	})
 
-	// Use the same provider that exists in the config file
+	// 使用配置文件中已存在的同一个 provider。
 	t.Setenv("ZHENG_MODEL", "env-model")
 
 	cfg, err := config.Load(nil)

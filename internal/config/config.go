@@ -22,7 +22,7 @@ const (
 	VerifyModeStrict   = "strict"
 )
 
-// Config contains runtime-selectable process settings.
+// Config 包含运行时可选择的进程配置项。
 type Config struct {
 	DefaultProvider string
 	Providers       map[string]ProviderSettings
@@ -38,11 +38,13 @@ type ProviderSettings struct {
 }
 
 type RuntimeSettings struct {
-	MaxSteps      int           `json:"max_steps"`
-	StepTimeout   time.Duration `json:"step_timeout"`
-	MemoryLimitMB int           `json:"memory_limit_mb"`
-	VerifyMode    string        `json:"verify_mode"`
-	AllowedCommands []string    `json:"allowed_commands"`
+	MaxSteps           int           `json:"max_steps"`
+	StepTimeout        time.Duration `json:"step_timeout"`
+	MemoryLimitMB      int           `json:"memory_limit_mb"`
+	VerifyMode         string        `json:"verify_mode"`
+	AllowedCommands    []string      `json:"allowed_commands"`
+	AllowedPluginPaths []string      `json:"allowed_plugin_paths"`
+	PluginCapabilities []string      `json:"plugin_capabilities"`
 }
 
 type fileConfig struct {
@@ -68,39 +70,41 @@ type providerFileConfig struct {
 }
 
 type runtimeFileConfig struct {
-	MaxSteps      *int    `json:"max_steps"`
-	StepTimeout   *string `json:"step_timeout"`
-	MemoryLimitMB *int    `json:"memory_limit_mb"`
-	VerifyMode    *string `json:"verify_mode"`
-	AllowedCommands []string `json:"allowed_commands"`
+	MaxSteps           *int     `json:"max_steps"`
+	StepTimeout        *string  `json:"step_timeout"`
+	MemoryLimitMB      *int     `json:"memory_limit_mb"`
+	VerifyMode         *string  `json:"verify_mode"`
+	AllowedCommands    []string `json:"allowed_commands"`
+	AllowedPluginPaths []string `json:"allowed_plugin_paths"`
+	PluginCapabilities []string `json:"plugin_capabilities"`
 }
 
-// GetModel exposes the selected model through the provider-boundary contract.
+// GetModel 通过 provider 边界契约暴露当前选定的模型。
 func (c Config) GetModel() string {
 	return c.selectedProviderSettings().Model
 }
 
-// GetProvider exposes the selected provider through the provider-boundary contract.
+// GetProvider 通过 provider 边界契约暴露当前选定的 provider。
 func (c Config) GetProvider() string {
 	return c.Provider
 }
 
-// GetProviderType exposes the selected provider type through the provider-boundary contract.
+// GetProviderType 通过 provider 边界契约暴露当前选定的 provider 类型。
 func (c Config) GetProviderType() string {
 	return c.selectedProviderSettings().Type
 }
 
-// GetAPIKey exposes the API key for LLM providers.
+// GetAPIKey 暴露 LLM provider 使用的 API key。
 func (c Config) GetAPIKey() string {
 	return c.selectedProviderSettings().APIKey
 }
 
-// GetBaseURL exposes the base URL for LLM API endpoints.
+// GetBaseURL 暴露 LLM API 端点使用的基础 URL。
 func (c Config) GetBaseURL() string {
 	return c.selectedProviderSettings().BaseURL
 }
 
-// Default returns the baseline CLI/runtime configuration.
+// Default 返回 CLI/运行时的基线配置。
 func Default() Config {
 	defaultProvider := ProviderOpenAI
 	return Config{
@@ -121,7 +125,7 @@ func Default() Config {
 	}
 }
 
-// Load reads config using precedence: defaults < config file < environment < CLI flags.
+// Load 按以下优先级读取配置：默认值 < 配置文件 < 环境变量 < CLI 标志。
 func Load(args []string) (Config, error) {
 	cfg := Default()
 
@@ -130,14 +134,14 @@ func Load(args []string) (Config, error) {
 		return Config{}, err
 	}
 
-	// First load config file (defaults < config file)
+	// 先加载配置文件（默认值 < 配置文件）。
 	if configPath != "" {
 		if err := loadFromFile(&cfg, configPath, configPathRequired); err != nil {
 			return Config{}, err
 		}
 	}
 
-	// Then apply environment variables (config file < environment)
+	// 然后应用环境变量（配置文件 < 环境变量）。
 	if err := applyEnv(&cfg); err != nil {
 		return Config{}, err
 	}
@@ -176,13 +180,13 @@ func Load(args []string) (Config, error) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	cfg.Provider = provider
 	upsertSelectedProvider(&cfg)
-	// Only update provider settings if provider exists in config
-	// This prevents creating new providers from CLI args alone
+	// 仅当 provider 已存在于配置中时才更新其设置。
+	// 这可防止仅凭 CLI 参数就创建新的 provider。
 	if _, exists := cfg.Providers[provider]; exists {
 		selected := cfg.Providers[provider]
-		// Only update provider settings when the corresponding CLI flag was set.
-		// Otherwise provider switches would leak defaults from the previously
-		// selected provider into the newly selected provider.
+		// 仅在对应的 CLI 标志被显式设置时才更新 provider 配置。
+		// 否则在切换 provider 时，之前 provider 的默认值可能会泄漏到
+		// 新选中的 provider 中。
 		if visitedFlags["model"] {
 			selected.Model = strings.TrimSpace(model)
 		}
@@ -321,6 +325,12 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 		if parsed.Runtime.AllowedCommands != nil {
 			cfg.Runtime.AllowedCommands = normalizeCommandList(parsed.Runtime.AllowedCommands)
 		}
+		if parsed.Runtime.AllowedPluginPaths != nil {
+			cfg.Runtime.AllowedPluginPaths = normalizeStringList(parsed.Runtime.AllowedPluginPaths)
+		}
+		if parsed.Runtime.PluginCapabilities != nil {
+			cfg.Runtime.PluginCapabilities = normalizeStringList(parsed.Runtime.PluginCapabilities)
+		}
 	}
 
 	if parsed.Provider != nil || parsed.Model != nil || parsed.APIKey != nil || parsed.BaseURL != nil || parsed.MaxSteps != nil || parsed.StepTimeout != nil || parsed.MemoryLimitMB != nil || parsed.VerifyMode != nil {
@@ -370,11 +380,11 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 		}
 	}
 
-// After loading providers, ensure cfg.Provider is valid
-	// If current provider doesn't exist in new providers map, switch to default_provider
+// 加载完 providers 后，确保 cfg.Provider 合法。
+	// 如果当前 provider 不存在于新的 providers 映射中，则切换到 default_provider。
 	if cfg.Provider != "" && cfg.Providers != nil {
 		if _, ok := cfg.Providers[cfg.Provider]; !ok {
-			// Current provider not in new providers, switch to default
+			// 当前 provider 不在新的 providers 中，切换为默认 provider。
 			cfg.Provider = ""
 		}
 	}
@@ -393,12 +403,16 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 }
 
 func normalizeCommandList(commands []string) []string {
-	if commands == nil {
+	return normalizeStringList(commands)
+}
+
+func normalizeStringList(values []string) []string {
+	if values == nil {
 		return nil
 	}
-	normalized := make([]string, 0, len(commands))
-	for _, command := range commands {
-		trimmed := strings.TrimSpace(command)
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
 			continue
 		}
@@ -481,7 +495,7 @@ func expandPath(path string) (string, error) {
 	return trimmed, nil
 }
 
-// Validate enforces fast-fail config rules before runtime startup.
+// Validate 在运行时启动前执行快速失败的配置校验规则。
 func (c Config) Validate() error {
 	if strings.TrimSpace(c.DefaultProvider) == "" {
 		return errors.New("default provider must not be empty")
@@ -499,11 +513,11 @@ func (c Config) Validate() error {
 	if _, ok := c.Providers[c.Provider]; !ok {
 		return fmt.Errorf("provider %q not found", c.Provider)
 	}
-	// Check provider type first, before model, so invalid provider type errors
-	// take precedence over empty model errors.
+	// 先校验 provider 类型，再校验 model，这样无效的 provider 类型错误
+	// 会优先于 model 为空的错误返回。
 	switch selected.Type {
 	case ProviderOpenAI, ProviderAnthropic:
-		// these providers use default stubs for now
+		// API key 仍然保持可选，以支持 CLI 装配中的本地 fake-model 工作流。
 	case ProviderDashScope:
 		if selected.APIKey == "" {
 			return errors.New("dashscope provider requires API key (set ZHENG_API_KEY or --api-key)")
@@ -552,8 +566,8 @@ func upsertSelectedProvider(cfg *Config) {
 	}
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	cfg.Provider = provider
-	// Only update existing provider, don't create new ones
-	// Validate will catch missing providers
+	// 只更新已存在的 provider，不创建新的 provider。
+	// 缺失的 provider 会由 Validate 捕获。
 	if _, exists := cfg.Providers[provider]; exists {
 		settings := cfg.Providers[provider]
 		if settings.Type == "" {
