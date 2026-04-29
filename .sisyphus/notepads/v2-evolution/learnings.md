@@ -1,0 +1,58 @@
+# v2 Evolution - Notepad
+
+## Learnings
+
+- Provider streaming can stay backward-compatible by adding a callback-based `Stream` method while preserving existing `Generate` request/response shapes unchanged.
+- A generic SSE helper shared by providers keeps streaming parsing logic centralized: accumulate `data:` lines until a blank separator, ignore malformed/non-data lines, and treat `data: [DONE]` as clean termination.
+- Domain guardrails forbid direct `json.RawMessage` usage text in `internal/domain`, so raw JSON payload storage for streaming events should use a typed `[]byte` wrapper with custom JSON marshal/unmarshal instead.
+- Fallback streaming can remain minimal and deterministic by emitting exactly one `TokenDelta` followed by one `SessionComplete`, with context cancellation checked between emissions.
+- Runtime-side streaming can stay backward-compatible by keeping `Engine.Run()` unchanged and cloning `Engine` inside `RunStream()` with an optional buffered `EventChannel` attached only for asynchronous execution.
+- A non-blocking runtime event channel can avoid producer stalls by dropping events on buffer overflow while still treating emits after close as explicit errors for caller-visible shutdown detection.
+
+- 2026-04-28: Engine.RunStream now injects a token-delta emitter into runtime context so ModelAdapter can prefer Provider.Stream() without changing Engine.Run() semantics.
+- 2026-04-28: Streaming resume/inspect contract remains persistence-light: only final Session/Plan/Step state is stored; token/tool events are CLI-only and inspect reads persisted summaries.
+- 2026-04-28: Provider.Stream() completion events should be suppressed inside ModelAdapter aggregation to avoid duplicate session_complete events; runtime remains authoritative for final completion.
+- 2026-04-28: T14 established `internal/plugin` around a minimal `PluginTool` interface that mirrors built-in tool metadata (`Name`, `Description`, `Schema`, `SafetyLevel`) and adds explicit `ContractVersion`, `Execute`, and `Close` lifecycle methods.
+- 2026-04-28: Promoted `SafetyLevel` constants into `internal/domain` and aliased `internal/tools` to the shared domain type so built-in tools and future plugins use the same risk vocabulary without duplicating enums.
+- 2026-04-28: External process plugins work cleanly as line-delimited JSON-RPC 2.0 over stdio when the host serializes request/response access behind a single RPC mutex and treats plugin stdout as protocol-only while capturing stderr for crash diagnostics.
+- 2026-04-28: Crash recovery for stdio plugins is simplest when timeout, malformed JSON, or premature process exit immediately mark the tool closed, kill the child if still alive, and surface stderr in the returned error for operator-visible debugging.
+- 2026-04-28: Native Go tool plugins should stay build-tag gated to `!windows`, accept only `.so` artifacts, and validate the exported `NewPluginTool` factory plus contract version immediately after `plugin.Open()`/`Lookup()`.
+- 2026-04-28: Native plugin tests are most reliable when they compile fixture `.so` files on demand with `-buildmode=plugin`, then exercise explicit failure cases for missing `NewPluginTool` and contract-version mismatches using temporary source directories inside the repository module.
+- 2026-04-28: PluginManager can stay minimal by classifying `.so` artifacts as native and everything else as external, then using a single loaded-plugin map keyed by plugin name plus `CloseAll()` cleanup that clears the registry before iterating shutdowns.
+
+- 2026-04-28: Plugin safety policy now treats plugin loading like other constrained filesystem actions: AllowedPluginPaths is an optional root allowlist, and PluginCapabilities is normalized from runtime config for future declaration checks without adding sandboxing.
+- 2026-04-28: CLI plugin flags can stay backward-compatible by only wrapping the existing tool executor when --plugin is provided; --plugin-dir resolves name-based plugin targets, and --allow-plugin extends the existing runtime plugin-path allowlist for explicit one-off loads.
+
+- 2026-04-29: Task decomposition domain types work best as pure data contracts with Validate() guarding unique subtask IDs, known dependency references, and cycle detection across both per-subtask dependency lists and explicit DAG edges.
+- 2026-04-29: Backward-compatible orchestration payloads can mirror internal/domain patterns by normalizing zero/unknown subtask status values during JSON marshal/unmarshal while keeping validation strict for explicitly unsupported runtime states.
+- 2026-04-29: Orchestrator dispatch stays deterministic when decomposition scheduling is dependency-driven, errgroup-backed, and semaphore-bounded so worker cancellation and first-error propagation share one context tree.
+- 2026-04-29: Worker lifecycle reporting is easiest to test when each subtask emits one terminal WorkerResult after plan/execute/verify, while the orchestrator keeps a separate worker registry only for active worker visibility and teardown checks.
+- 2026-04-29: A scoped WorkerAgent can reuse the existing runtime.Engine by translating one Subtask into a lightweight domain.Task, then validating success from final session status plus the last verification result instead of embedding a second full agent loop.
+- 2026-04-29: Worker teardown stays predictable when the worker owns a cancelable scoped context, exposes CurrentResult/Report hooks for orchestrator collection, and snapshots terminal output from the last observation/final response for deterministic success and cancellation assertions.
+- 2026-04-29: Typed orchestration channels stay simple and compatibility-safe when request/result payloads are concrete structs, buffer defaults mirror existing worker throughput assumptions, and channel wrappers provide idempotent Close plus panic-safe Send after close.
+- 2026-04-29: DAGScheduler stays deterministic by precomputing dependency counts plus dependents once, then exposing Schedule() as whole ready batches and MarkComplete() as the only state transition that unlocks downstream subtasks.
+- 2026-04-29: Treating `parallel-with` DAG edges as non-blocking metadata preserves parallel roots while still honoring explicit subtask dependency lists and directed DAG edges for topological ordering and dependency wait semantics.
+- 2026-04-29: Result aggregation is easiest to keep compatibility-safe when worker `TaskResult` values are normalized into a dedicated aggregated snapshot keyed by subtask ID, with overall status derived separately from per-subtask terminal states.
+- 2026-04-29: Aggregation timeout handling is simplest when collection wraps the caller context with a configurable deadline, returns already-collected partial results, and marks the rollup as `timed_out` instead of discarding successful completions.
+- 2026-04-29: Multi-agent CLI wiring stays backward-compatible when `run` normalizes `--decompose`, `--max-workers`, and `--aggregation` up front, then branches through a dedicated execution hook so single-agent `executeRun` remains the unchanged default path.
+- 2026-04-29: CLI-facing aggregation values can use hyphenated UX strings (`all-succeed`, `best-effort`) while translating once into internal orchestration enums (`all_succeed`, `best_effort`) at the boundary to keep tests and API ergonomics both stable.
+- 2026-04-29: Cross-wave integration coverage is easiest to keep deterministic when the orchestration test uses a scripted LLM provider that streams JSON action payloads in token chunks, letting `runtime.ModelAdapter`, runtime events, built-in tools, and plugin tools exercise their real contracts without external network calls.
+- 2026-04-29: For end-to-end tool-call tests driven through `ModelAdapter`, the mocked provider must emit `tool_call.input` as raw JSON text values expected by each adapter (`web_fetch`, `code_search`) rather than double-encoded strings, otherwise the runtime path succeeds structurally but the adapters receive invalid payloads.
+
+- 2026-04-29: T28 validation matrix updated with comprehensive v2 feature coverage across streaming, new tools, plugin system, and multi-agent orchestration. All v2 features have dedicated test sections with explicit test names, expected outcomes, and evidence targets.
+- 2026-04-29: Streaming validation covers 7 proof surfaces: token deltas, tool lifecycle events (start/end), step/session completion, event ordering (within and across steps), non-streaming provider fallback, and full integration flow. Event types defined in `internal/domain/events.go` with typed payloads for each event category.
+- 2026-04-29: New tools validation spans 11 test surfaces covering web_fetch (HTTP/S validation, domain allowlist, truncation), ask_user (options, retry logic, timeout handling), and code_search (language filtering, output modes, max results enforcement). All tests in `internal/tools/adapters/*_test.go`.
+- 2026-04-29: Plugin system validation includes 7 test surfaces: discovery (external + native), loading (stdio JSON-RPC for external, Go plugin for native), contract version validation, and cleanup. Dual-mode architecture enables cross-platform support with performance optimization on Linux/macOS.
+- 2026-04-29: Multi-agent orchestration validation covers 9 proof surfaces: orchestrator lifecycle, worker semaphore, worker plan/execute/verify flow, DAG dependency scheduling, parallel edge concurrency, result aggregation, aggregation strategies, multi-agent integration with plugins, and cancellation propagation. Tests in `internal/orchestration/*_test.go`.
+- 2026-04-29: v2 integration tests (`TestIntegrationFullFlow`, `TestIntegrationMultiAgentWithPlugins`) validate end-to-end streaming + tools + plugins + multi-agent coordination together, ensuring composability across all v2 features.
+- 2026-04-29: Evidence file structure expanded for v2 with dedicated files for streaming, tools, plugins, orchestration, and full integration - enabling granular test result tracking and targeted debugging.
+
+- 2026-04-29: v2 release preparation completed. All v2 features (streaming, new tools, plugin system, multi-agent orchestration) implemented, tested, and documented.
+- 2026-04-29: PROGRESS.md and README.md updated with v2 completion status, feature summaries, and release notes.
+- 2026-04-29: All tests pass (go test ./...). No regressions introduced.
+- 2026-04-29: v2 validation matrix complete with 34+ proof surfaces across streaming (7), new tools (11), plugins (7), and multi-agent (9) categories.
+- 2026-04-29: Documentation updates include streaming architecture (ADR-006), plugin system (ADR-007), and comprehensive validation matrix.
+
+- 2026-04-29: F1 audit result notes — implementation is largely present and tests/build pass (`go build ./...`, `go test ./...`), but plan-to-code mapping is not fully compliant: multi-agent artifacts are implemented under `internal/orchestration/` (not `internal/runtime/` as specified in T21-T25), `internal/integration/v2_integration_test.go` (T27 expected path) is absent, and task status sequencing in plan is inconsistent (`T17` unchecked while `T18/T19` are checked).
+- 2026-04-29: Scope-creep check found no obvious forbidden feature additions (no new provider families, vector DB/embedding graph features, messaging gateways, or HTTP server surface detected in Go sources).
+- 2026-04-29: Plugin capability policy enforcement is most robust when the host validates capabilities immediately after contract-version validation in `PluginManager.Load()`, closes rejected plugins before registration, and treats a configured allowlist as requiring non-empty plugin declarations.
