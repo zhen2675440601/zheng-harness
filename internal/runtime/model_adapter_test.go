@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -14,11 +15,11 @@ func TestModelAdapterNextActionParsesExpandedActionTypes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		output     string
-		wantType   domain.ActionType
+		name        string
+		output      string
+		wantType    domain.ActionType
 		wantSummary string
-		wantReply  string
+		wantReply   string
 	}{
 		{
 			name:        "request input",
@@ -138,17 +139,159 @@ func TestModelAdapterNextActionRejectsInvalidExpandedActions(t *testing.T) {
 	}
 }
 
+func TestModelAdapterGenerateStreamsProviderOutputWhenEmitterPresent(t *testing.T) {
+	t.Parallel()
+
+	provider := &streamStubProvider{events: []llm.StreamingEvent{
+		mustTokenEvent(t, 0, "{\"type\":\"respond\",\"summary\":\"hello"),
+		mustTokenEvent(t, 0, "\",\"response\":\"streamed reply\"}"),
+		mustSessionCompleteEvent(t, "", "success"),
+	}}
+	adapter := NewModelAdapter(provider)
+
+	var streamed []domain.StreamingEvent
+	ctx := withStreamEventEmitter(context.Background(), func(event domain.StreamingEvent) error {
+		streamed = append(streamed, event)
+		return nil
+	})
+
+	action, err := adapter.NextAction(ctx, sampleTask(), sampleSession(), samplePlan(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NextAction: %v", err)
+	}
+	if !provider.streamCalled {
+		t.Fatal("expected provider.Stream to be used")
+	}
+	if provider.generateCalled {
+		t.Fatal("Generate should not be used when streaming emitter is present")
+	}
+	if action.Type != domain.ActionTypeRespond || action.Response != "streamed reply" {
+		t.Fatalf("action = %+v, want streamed respond action", action)
+	}
+	if len(streamed) != 2 {
+		t.Fatalf("streamed events = %d, want 2 token events", len(streamed))
+	}
+	for i, event := range streamed {
+		if event.Type != domain.EventTokenDelta {
+			t.Fatalf("event[%d].type = %q, want token_delta", i, event.Type)
+		}
+	}
+}
+
+func TestModelAdapterGenerateStreamFallbackUsesGenerateWhenProviderStreamsViaFallback(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{output: `{"type":"respond","summary":"hello","response":"fallback reply"}`}
+	adapter := NewModelAdapter(provider)
+
+	var streamed []domain.StreamingEvent
+	ctx := withStreamEventEmitter(context.Background(), func(event domain.StreamingEvent) error {
+		streamed = append(streamed, event)
+		return nil
+	})
+
+	action, err := adapter.NextAction(ctx, sampleTask(), sampleSession(), samplePlan(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NextAction: %v", err)
+	}
+	if action.Response != "fallback reply" {
+		t.Fatalf("response = %q, want fallback reply", action.Response)
+	}
+	if len(streamed) != 1 {
+		t.Fatalf("streamed events = %d, want 1 token event", len(streamed))
+	}
+	if streamed[0].Type != domain.EventTokenDelta {
+		t.Fatalf("event type = %q, want token_delta", streamed[0].Type)
+	}
+	if provider.lastInput == "" {
+		t.Fatal("expected fallback stream to invoke Generate")
+	}
+}
+
+func TestModelAdapterGenerateStreamPropagatesTokenDecodeError(t *testing.T) {
+	t.Parallel()
+
+	provider := &streamStubProvider{events: []llm.StreamingEvent{{
+		Type:      domain.EventTokenDelta,
+		StepIndex: 0,
+		Payload:   domain.EventPayload([]byte("{")),
+	}, mustSessionCompleteEvent(t, "", "success")}}
+	adapter := NewModelAdapter(provider)
+
+	ctx := withStreamEventEmitter(context.Background(), func(event domain.StreamingEvent) error { return nil })
+	_, err := adapter.NextAction(ctx, sampleTask(), sampleSession(), samplePlan(), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if !strings.Contains(err.Error(), "decode stub token delta") {
+		t.Fatalf("error = %q, want token decode context", err)
+	}
+}
+
 type stubProvider struct {
 	output    string
 	lastInput string
 }
 
-func (s *stubProvider) Name() string { return "stub" }
+func (s *stubProvider) Name() string  { return "stub" }
 func (s *stubProvider) Model() string { return "stub-model" }
 
 func (s *stubProvider) Generate(_ context.Context, request llm.Request) (llm.Response, error) {
 	s.lastInput = request.Input
 	return llm.Response{Model: s.Model(), Output: s.output, StopReason: "stop"}, nil
+}
+
+func (s *stubProvider) Stream(ctx context.Context, request llm.Request, emit func(llm.StreamingEvent) error) error {
+	return llm.StreamFallback(ctx, s.Generate, request, emit)
+}
+
+type streamStubProvider struct {
+	events         []llm.StreamingEvent
+	streamErr      error
+	generateCalled bool
+	streamCalled   bool
+	lastInput      string
+}
+
+func (s *streamStubProvider) Name() string  { return "stub" }
+func (s *streamStubProvider) Model() string { return "stub-model" }
+
+func (s *streamStubProvider) Generate(_ context.Context, request llm.Request) (llm.Response, error) {
+	s.generateCalled = true
+	s.lastInput = request.Input
+	return llm.Response{}, errors.New("unexpected Generate call")
+}
+
+func (s *streamStubProvider) Stream(_ context.Context, request llm.Request, emit func(llm.StreamingEvent) error) error {
+	s.streamCalled = true
+	s.lastInput = request.Input
+	if s.streamErr != nil {
+		return s.streamErr
+	}
+	for _, event := range s.events {
+		if err := emit(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mustTokenEvent(t *testing.T, stepIndex int, content string) llm.StreamingEvent {
+	t.Helper()
+	event, err := domain.TokenDelta(stepIndex, content)
+	if err != nil {
+		t.Fatalf("token event: %v", err)
+	}
+	return *event
+}
+
+func mustSessionCompleteEvent(t *testing.T, sessionID, status string) llm.StreamingEvent {
+	t.Helper()
+	event, err := domain.SessionComplete(sessionID, status)
+	if err != nil {
+		t.Fatalf("session complete event: %v", err)
+	}
+	return *event
 }
 
 func sampleTask() domain.Task {

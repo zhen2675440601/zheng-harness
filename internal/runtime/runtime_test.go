@@ -154,7 +154,9 @@ func TestRuntimeRequestInputTransitionsSessionToBlockedInput(t *testing.T) {
 	}
 
 	sessions := &fakeSessionStore{}
-	verifier := &fakeVerifier{}
+	verifier := &fakeVerifier{
+		results: []domain.VerificationResult{{Passed: true, Status: domain.VerificationStatusPassed, Reason: "complete action verified"}},
+	}
 	engine := runtime.Engine{
 		Model: &fakeModel{
 			plans: []domain.Plan{{ID: "plan-1", TaskID: task.ID, Summary: "ask for missing input"}},
@@ -211,7 +213,9 @@ func TestRuntimeCompleteTransitionsThroughSuccessfulPathWithoutToolExecution(t *
 	}
 
 	sessions := &fakeSessionStore{}
-	verifier := &fakeVerifier{}
+	verifier := &fakeVerifier{
+		results: []domain.VerificationResult{{Passed: true, Status: domain.VerificationStatusPassed, Reason: "complete action verified"}},
+	}
 	engine := runtime.Engine{
 		Model: &fakeModel{
 			plans: []domain.Plan{{ID: "plan-1", TaskID: task.ID, Summary: "deliver final answer"}},
@@ -247,8 +251,8 @@ func TestRuntimeCompleteTransitionsThroughSuccessfulPathWithoutToolExecution(t *
 	if steps[0].Observation.ToolResult != nil {
 		t.Fatal("complete should not masquerade as a tool execution")
 	}
-	if got := verifier.called; got != 0 {
-		t.Fatalf("verifier calls = %d, want 0 for complete", got)
+	if got := verifier.called; got != 1 {
+		t.Fatalf("verifier calls = %d, want 1 for complete", got)
 	}
 	if got := steps[0].Observation.FinalResponse; got != "Completed synthesis with cited evidence." {
 		t.Fatalf("final response = %q, want propagated complete response", got)

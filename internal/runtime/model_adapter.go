@@ -12,7 +12,7 @@ import (
 	"zheng-harness/internal/llm"
 )
 
-// ModelAdapter bridges provider-oriented LLM calls into the domain.Model port.
+// ModelAdapter 将面向 provider 的 LLM 调用桥接到 domain.Model 端口。
 type ModelAdapter struct {
 	provider     llm.Provider
 	systemPrompt string
@@ -41,7 +41,7 @@ type observationResponse struct {
 	FinalResponse string `json:"final_response,omitempty"`
 }
 
-// NewModelAdapter wraps an llm.Provider behind the domain.Model boundary.
+// NewModelAdapter 在 domain.Model 边界之后封装 llm.Provider。
 func NewModelAdapter(provider llm.Provider) *ModelAdapter {
 	systemPrompt, _ := prompts.SystemPrompt(prompts.DefaultSystemPromptVersion)
 	return &ModelAdapter{provider: provider, systemPrompt: strings.TrimSpace(systemPrompt)}
@@ -204,14 +204,43 @@ func (m *ModelAdapter) generate(ctx context.Context, input string) (llm.Response
 	if m == nil || m.provider == nil {
 		return llm.Response{}, fmt.Errorf("model adapter requires provider")
 	}
-	response, err := m.provider.Generate(ctx, llm.Request{
+	request := llm.Request{
 		SystemPrompt: m.systemPrompt,
 		Input:        input,
-	})
+	}
+	if emit := streamEmitterFromContext(ctx); emit != nil {
+		response, err := m.generateStream(ctx, request, emit)
+		if err != nil {
+			return llm.Response{}, err
+		}
+		return response, nil
+	}
+	response, err := m.provider.Generate(ctx, request)
 	if err != nil {
 		return llm.Response{}, fmt.Errorf("generate %s response: %w", m.provider.Name(), err)
 	}
 	return response, nil
+}
+
+func (m *ModelAdapter) generateStream(ctx context.Context, request llm.Request, emit func(llm.StreamingEvent) error) (llm.Response, error) {
+	var output strings.Builder
+	err := m.provider.Stream(ctx, request, func(event llm.StreamingEvent) error {
+		if event.Type == domain.EventTokenDelta {
+			var payload domain.TokenDeltaPayload
+			if err := event.GetPayload(&payload); err != nil {
+				return fmt.Errorf("decode %s token delta: %w", m.provider.Name(), err)
+			}
+			output.WriteString(payload.Content)
+		}
+		if emit == nil || event.Type == domain.EventSessionComplete {
+			return nil
+		}
+		return emit(event)
+	})
+	if err != nil {
+		return llm.Response{}, fmt.Errorf("stream %s response: %w", m.provider.Name(), err)
+	}
+	return llm.Response{Model: m.provider.Model(), Output: output.String(), StopReason: "stream_complete"}, nil
 }
 
 func decodeJSONResponse[T any](raw string, target *T) error {
@@ -220,16 +249,16 @@ func decodeJSONResponse[T any](raw string, target *T) error {
 		return fmt.Errorf("empty model response")
 	}
 
-	// Remove markdown code block wrapper if present
-	// Handles ```json\n{...}\n``` and ```\n{...}\n```
+	// 如存在 Markdown 代码块包装，则先移除。
+	// 处理 ```json\n{...}\n``` 与 ```\n{...}\n``` 两种形式。
 	if strings.HasPrefix(trimmed, "```") {
-		// Find the end of the first line (after ```json or just ```)
+		// 查找第一行末尾（位于 ```json 或 ``` 之后）。
 		firstLineEnd := strings.Index(trimmed, "\n")
 		if firstLineEnd != -1 {
-			// Find the closing ```
+			// 查找结束的 ```。
 			closingIndex := strings.LastIndex(trimmed, "```")
 			if closingIndex > firstLineEnd {
-				// Extract content between first line and closing
+				// 提取第一行之后到结束标记之前的内容。
 				trimmed = strings.TrimSpace(trimmed[firstLineEnd+1:closingIndex])
 			}
 		}

@@ -14,6 +14,10 @@ import (
 
 var errRetryBudgetExceeded = errors.New("runtime retry budget exceeded")
 
+type streamContextKey struct{}
+
+type streamEventEmitter func(domain.StreamingEvent) error
+
 type iterationOutcome struct {
 	terminal bool
 	status   domain.SessionStatus
@@ -28,20 +32,21 @@ type toolExecutorWithRegistry interface {
 	Registry() toolInfoLister
 }
 
-// Engine coordinates a bounded multi-step runtime loop using domain ports only.
+// Engine 仅通过 domain 端口协调一个有界的多步骤运行时循环。
 type Engine struct {
 	Model          domain.Model
 	Tools          domain.ToolExecutor
 	Memory         domain.MemoryStore
 	Sessions       domain.SessionStore
 	Verifier       domain.Verifier
+	EventChannel   *EventChannel
 	Clock          func() time.Time
 	MaxSteps       int
 	MaxRetries     int
 	SessionTimeout time.Duration
 }
 
-// Run executes a bounded plan-execute-verify loop until success or termination.
+// Run 执行一个有界的计划-执行-验证循环，直到成功或终止。
 func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
 	if e.Model == nil || e.Tools == nil || e.Memory == nil || e.Sessions == nil || e.Verifier == nil {
 		return domain.Session{}, domain.Plan{}, nil, fmt.Errorf("runtime engine requires all dependencies")
@@ -81,6 +86,9 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 	plan, err := e.createPlan(ctx, protocol, session, timestamp)
 	if err != nil {
 		return e.failSession(ctx, session, domain.SessionStatusFatalError, domain.Plan{}, nil, err)
+	}
+	if err := e.emitStepCompleteEvent(0, plan.Summary); err != nil {
+		return e.failSession(ctx, session, domain.SessionStatusFatalError, plan, nil, err)
 	}
 
 	steps := make([]domain.Step, 0, maxSteps)
@@ -124,6 +132,9 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 			if err := e.Sessions.SaveSession(ctx, session); err != nil {
 				return domain.Session{}, domain.Plan{}, nil, err
 			}
+			if err := e.emitSessionCompleteEvent(session); err != nil {
+				return domain.Session{}, domain.Plan{}, nil, err
+			}
 			return session, plan, steps, outcome.error
 		}
 
@@ -140,9 +151,51 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 		if err != nil {
 			return e.failSession(ctx, session, domain.SessionStatusFatalError, plan, steps, err)
 		}
+		if err := e.emitStepCompleteEvent(len(steps)+1, plan.Summary); err != nil {
+			return e.failSession(ctx, session, domain.SessionStatusFatalError, plan, steps, err)
+		}
 	}
 
 	return e.failSession(ctx, session, domain.SessionStatusBudgetExceeded, plan, steps, nil)
+}
+
+// RunStream starts the runtime loop asynchronously and returns an event channel immediately.
+func (e Engine) RunStream(ctx context.Context, task domain.Task) (*EventChannel, domain.Session, domain.Plan, []domain.Step, error) {
+	if e.Model == nil || e.Tools == nil || e.Memory == nil || e.Sessions == nil || e.Verifier == nil {
+		return nil, domain.Session{}, domain.Plan{}, nil, fmt.Errorf("runtime engine requires all dependencies")
+	}
+
+	eventChannel := NewEventChannel(64)
+	streamEngine := e
+	streamEngine.EventChannel = eventChannel
+	streamCtx := withStreamEventEmitter(ctx, func(event domain.StreamingEvent) error {
+		if event.Type != domain.EventTokenDelta {
+			return nil
+		}
+		return eventChannel.Emit(event)
+	})
+
+	go func() {
+		defer eventChannel.Close()
+		_, _, _, _ = streamEngine.Run(streamCtx, task)
+	}()
+
+	return eventChannel, domain.Session{}, domain.Plan{}, nil, nil
+}
+
+func withStreamEventEmitter(ctx context.Context, emit streamEventEmitter) context.Context {
+	if emit == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, streamContextKey{}, emit)
+}
+
+func streamEmitterFromContext(ctx context.Context) streamEventEmitter {
+	if ctx == nil {
+		return nil
+	}
+	emit, _ := ctx.Value(streamContextKey{}).(streamEventEmitter)
+	return emit
 }
 
 func (e Engine) createPlan(ctx context.Context, protocol ResolvedTaskProtocol, session domain.Session, createdAt time.Time) (domain.Plan, error) {
@@ -170,6 +223,12 @@ func (e Engine) executeIteration(ctx context.Context, protocol ResolvedTaskProto
 	if err != nil {
 		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
 	}
+	stepIndex := len(steps) + 1
+	if action.ToolCall != nil {
+		if err := e.emitToolStartEvent(stepIndex, *action.ToolCall); err != nil {
+			return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
+		}
+	}
 
 	var result *domain.ToolResult
 	if action.ToolCall != nil {
@@ -178,6 +237,9 @@ func (e Engine) executeIteration(ctx context.Context, protocol ResolvedTaskProto
 			executed.Error = execErr.Error()
 		}
 		result = &executed
+		if err := e.emitToolEndEvent(stepIndex, executed); err != nil {
+			return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
+		}
 	}
 
 	observation, err := e.Model.Observe(ctx, protocol.Task, session, plan, action, result)
@@ -185,6 +247,9 @@ func (e Engine) executeIteration(ctx context.Context, protocol ResolvedTaskProto
 		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
 	}
 	observation = e.normalizeObservationForAction(action, observation)
+	if err := e.emitStepCompleteEvent(stepIndex, observation.Summary); err != nil {
+		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
+	}
 
 	verification, err := e.verifyIteration(ctx, protocol, session, plan, steps, action, observation)
 	if err != nil {
@@ -220,12 +285,6 @@ func (e Engine) verifyIteration(ctx context.Context, protocol ResolvedTaskProtoc
 			Status: domain.VerificationStatusNotApplicable,
 			Reason: fmt.Sprintf("%s task blocked waiting for external input", protocol.Metadata.TaskType),
 		}, nil
-	case domain.ActionTypeComplete:
-		return domain.VerificationResult{
-			Passed: true,
-			Status: domain.VerificationStatusPassed,
-			Reason: fmt.Sprintf("%s task completed explicitly", protocol.Metadata.TaskType),
-		}, nil
 	default:
 		return e.Verifier.Verify(ctx, protocol.Task, session, plan, steps, observation)
 	}
@@ -236,8 +295,6 @@ func (e Engine) decideIterationOutcome(protocol ResolvedTaskProtocol, action dom
 	switch action.Type {
 	case domain.ActionTypeRequestInput:
 		return iterationOutcome{terminal: true, status: domain.SessionStatusBlockedInput}
-	case domain.ActionTypeComplete:
-		return iterationOutcome{terminal: true, status: domain.SessionStatusSuccess}
 	}
 	if verification.Passed {
 		return iterationOutcome{terminal: true, status: domain.SessionStatusSuccess}
@@ -368,5 +425,60 @@ func (e Engine) failSession(ctx context.Context, session domain.Session, status 
 	if err := e.Sessions.SaveSession(ctx, session); err != nil {
 		return domain.Session{}, domain.Plan{}, nil, err
 	}
+	if cause != nil {
+		if emitErr := e.emitErrorEvent(len(steps), cause.Error()); emitErr != nil {
+			return domain.Session{}, domain.Plan{}, nil, emitErr
+		}
+	}
+	if emitErr := e.emitSessionCompleteEvent(session); emitErr != nil {
+		return domain.Session{}, domain.Plan{}, nil, emitErr
+	}
 	return session, plan, steps, cause
+}
+
+func (e Engine) emitToolStartEvent(stepIndex int, call domain.ToolCall) error {
+	event, err := domain.ToolStart(stepIndex, call.Name, call.Input)
+	if err != nil {
+		return err
+	}
+	return e.emitEvent(*event)
+}
+
+func (e Engine) emitToolEndEvent(stepIndex int, result domain.ToolResult) error {
+	event, err := domain.ToolEnd(stepIndex, result.ToolName, result.Output, result.Error)
+	if err != nil {
+		return err
+	}
+	return e.emitEvent(*event)
+}
+
+func (e Engine) emitStepCompleteEvent(stepIndex int, summary string) error {
+	event, err := domain.StepComplete(stepIndex, summary)
+	if err != nil {
+		return err
+	}
+	return e.emitEvent(*event)
+}
+
+func (e Engine) emitErrorEvent(stepIndex int, message string) error {
+	event, err := domain.Error(stepIndex, message)
+	if err != nil {
+		return err
+	}
+	return e.emitEvent(*event)
+}
+
+func (e Engine) emitSessionCompleteEvent(session domain.Session) error {
+	event, err := domain.SessionComplete(session.ID, string(session.Status))
+	if err != nil {
+		return err
+	}
+	return e.emitEvent(*event)
+}
+
+func (e Engine) emitEvent(event domain.StreamingEvent) error {
+	if e.EventChannel == nil {
+		return nil
+	}
+	return e.EventChannel.Emit(event)
 }
