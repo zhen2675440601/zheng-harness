@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -13,6 +16,8 @@ import (
 
 	"zheng-harness/internal/config"
 	"zheng-harness/internal/domain"
+	pluginruntime "zheng-harness/internal/plugin"
+	"zheng-harness/internal/runtime"
 	"zheng-harness/internal/store"
 	"zheng-harness/internal/tools"
 	"zheng-harness/internal/verify"
@@ -278,9 +283,9 @@ func TestRunCLIUsesSelectedProviderFromConfig(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	// Use --provider dashscope (which has no api_key set) with --verify-mode off
-	// Since no real API key is available, this test validates config loading works.
-	// Without an API key, the real provider will fail, so we test config selection without --provider override.
+	// 使用 --provider dashscope（其未设置 api_key）并配合 --verify-mode off。
+	// 由于没有可用的真实 API key，此测试用于验证配置加载能够正常工作。
+	// 在没有 API key 的情况下，真实 provider 会失败，因此这里测试不通过 --provider 覆盖时的配置选择逻辑。
 	exitCode := runCLI(context.Background(), []string{"run", "--task", "inspect repository", "--config", configPath, "--verify-mode", config.VerifyModeOff, "--db", dbPath, "--json"}, &stdout, &stderr)
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, want 0, stderr=%s", exitCode, stderr.String())
@@ -329,8 +334,8 @@ func TestRunCLIUsesProviderAdapterForOpenAI(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	// When OpenAI provider is specified without an API key, CLI falls back to FakeModel.
-	// This test verifies the CLI handles missing API key gracefully (uses FakeModel instead of crashing).
+	// 当指定 OpenAI provider 但未提供 API key 时，CLI 会回退到 FakeModel。
+	// 此测试验证 CLI 能优雅处理缺少 API key 的情况（使用 FakeModel 而不是直接崩溃）。
 	exitCode := runCLI(context.Background(), []string{
 		"run",
 		"--task", "inspect repository",
@@ -349,6 +354,102 @@ func TestRunCLIUsesProviderAdapterForOpenAI(t *testing.T) {
 	}
 	if payload.Status != domain.SessionStatusSuccess {
 		t.Fatalf("status = %q, want success (FakeModel fallback)", payload.Status)
+	}
+}
+
+func TestMultiAgentCLIUsesDecomposeFlags(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	var observed multiAgentOptions
+
+	app := cliApp{
+		stdout: &stdout,
+		stderr: &stderr,
+		newSession: func(dbPath string) (*store.SQLiteSessionStore, error) { return store.NewSQLiteSessionStore(dbPath) },
+		newMemory:  func(dbPath string) (*store.SQLiteMemoryStore, error) { return store.NewMemoryStore(dbPath) },
+		newExecutor: func() domain.ToolExecutor { return FakeToolExecutor{} },
+		newModel:    func() domain.Model { return &FakeModel{} },
+		newVerifier: func(domain.ToolExecutor) domain.Verifier { return FakeVerifier{} },
+		runMultiAgent: func(_ context.Context, _ runtime.Engine, task domain.Task, options multiAgentOptions) (domain.Session, domain.Plan, []domain.Step, error) {
+			observed = options
+			return domain.Session{ID: task.ID, Status: domain.SessionStatusSuccess}, domain.Plan{Summary: "multi-agent plan"}, []domain.Step{{Index: 1}}, nil
+		},
+		notifySignal: signal.Notify,
+		stopSignal:   signal.Stop,
+		now:          time.Now,
+	}
+
+	err := app.runCommand(context.Background(), []string{
+		"--task", "coordinate subtasks",
+		"--db", dbPath,
+		"--json",
+		"--decompose",
+		"--max-workers", "6",
+		"--aggregation", aggregationFlagBestEffort,
+	})
+	if err != nil {
+		t.Fatalf("runCommand() error = %v", err)
+	}
+	if observed != (multiAgentOptions{Decompose: true, MaxWorkers: 6, Aggregation: aggregationFlagBestEffort}) {
+		t.Fatalf("observed options = %+v", observed)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+
+	var payload runJSONOutput
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal run output: %v\noutput=%s", err, stdout.String())
+	}
+	if payload.Command != "run" {
+		t.Fatalf("command = %q, want run", payload.Command)
+	}
+	if payload.Status != domain.SessionStatusSuccess {
+		t.Fatalf("status = %q, want success", payload.Status)
+	}
+	if !strings.HasPrefix(payload.SessionID, "session-") {
+		t.Fatalf("session id = %q, want session-*", payload.SessionID)
+	}
+	if payload.TaskInput != "coordinate subtasks" {
+		t.Fatalf("task input = %q, want original task", payload.TaskInput)
+	}
+	if payload.Plan != "multi-agent plan" {
+		t.Fatalf("plan = %q, want multi-agent plan", payload.Plan)
+	}
+	if payload.Steps != 1 {
+		t.Fatalf("steps = %d, want 1", payload.Steps)
+	}
+	if payload.TaskType != domain.TaskCategoryGeneral {
+		t.Fatalf("task type = %q, want %q", payload.TaskType, domain.TaskCategoryGeneral)
+	}
+}
+
+func TestMultiAgentCLIRejectsInvalidAggregation(t *testing.T) {
+	t.Parallel()
+
+	app := cliApp{stderr: &bytes.Buffer{}}
+	err := app.runCommand(context.Background(), []string{"--task", "bad strategy", "--decompose", "--aggregation", "random"})
+	if err == nil {
+		t.Fatal("runCommand() error = nil, want invalid aggregation error")
+	}
+	if !strings.Contains(err.Error(), "--aggregation") {
+		t.Fatalf("error = %v, want aggregation validation", err)
+	}
+}
+
+func TestMultiAgentCLIRejectsInvalidMaxWorkers(t *testing.T) {
+	t.Parallel()
+
+	app := cliApp{stderr: &bytes.Buffer{}}
+	err := app.runCommand(context.Background(), []string{"--task", "bad workers", "--decompose", "--max-workers", "0"})
+	if err == nil {
+		t.Fatal("runCommand() error = nil, want invalid max-workers error")
+	}
+	if !strings.Contains(err.Error(), "--max-workers") {
+		t.Fatalf("error = %v, want max-workers validation", err)
 	}
 }
 
@@ -559,4 +660,141 @@ func TestAllowCommandAdditionsWork(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "not allowlisted") || strings.Contains(err.Error(), "explicitly denied") {
 		t.Fatalf("npm command error = %v, want allowlisted execution attempt", err)
 	}
+}
+
+func TestPluginCLI(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	loadedPaths := make([]string, 0, 2)
+	allowedPluginPaths := make([]string, 0, 2)
+	observedTools := make([]string, 0, 8)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	app := cliApp{
+		stdout: &stdout,
+		stderr: &stderr,
+		cfg: config.Config{
+			Runtime: config.RuntimeSettings{
+				AllowedPluginPaths: []string{"plugins/default"},
+			},
+		},
+		newSession: func(dbPath string) (*store.SQLiteSessionStore, error) {
+			return store.NewSQLiteSessionStore(dbPath)
+		},
+		newMemory: func(dbPath string) (*store.SQLiteMemoryStore, error) {
+			return store.NewMemoryStore(dbPath)
+		},
+		newExecutor: func() domain.ToolExecutor {
+			executor, err := tools.NewExecutor(".")
+			if err != nil {
+				t.Fatalf("NewExecutor(): %v", err)
+			}
+			return executor
+		},
+		pluginExecutorFactory: func(base domain.ToolExecutor, options pluginCLIOptions) (domain.ToolExecutor, error) {
+			allowedPluginPaths = append([]string(nil), options.AllowedPaths...)
+			for _, path := range resolvePluginTargets(normalizePluginCLIOptions(options)) {
+				loadedPaths = append(loadedPaths, path)
+			}
+			registry := cloneExecutorRegistry(base)
+			for _, name := range []string{"echo-plugin", "inspect.so"} {
+				if err := registry.Register(toToolDefinition(&stubCLIPluginTool{name: name})); err != nil {
+					return nil, err
+				}
+			}
+			return &pluginExecutor{base: base, registry: registry}, nil
+		},
+		newModel: func() domain.Model { return &FakeModel{} },
+		newVerifier: func(domain.ToolExecutor) domain.Verifier { return FakeVerifier{} },
+		runEngine: func(_ context.Context, engine runtime.Engine, _ domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
+			provider, ok := engine.Tools.(interface{ Registry() *tools.Registry })
+			if !ok || provider.Registry() == nil {
+				return domain.Session{}, domain.Plan{}, nil, errors.New("plugin executor registry unavailable")
+			}
+			for _, def := range provider.Registry().List() {
+				observedTools = append(observedTools, def.Name)
+			}
+			return domain.Session{Status: domain.SessionStatusSuccess}, domain.Plan{Summary: "plugin test"}, nil, nil
+		},
+		notifySignal: signal.Notify,
+		stopSignal:   signal.Stop,
+		now:          time.Now,
+	}
+
+	err := app.runCommand(context.Background(), []string{
+		"--task", "run plugin-enabled task",
+		"--db", dbPath,
+		"--plugin-dir", "./plugins/custom",
+		"--plugin", "echo-plugin",
+		"--plugin", "./vendor/plugins/inspect.so",
+		"--allow-plugin", "plugins/custom",
+		"--allow-plugin", "vendor/plugins",
+	})
+	if err != nil {
+		t.Fatalf("runCommand() error = %v", err)
+	}
+
+	if len(allowedPluginPaths) != 2 || allowedPluginPaths[0] != "plugins/custom" || allowedPluginPaths[1] != "vendor/plugins" {
+		t.Fatalf("allowed plugin paths = %v, want [plugins/custom vendor/plugins]", allowedPluginPaths)
+	}
+
+	sort.Strings(loadedPaths)
+	wantPaths := []string{filepath.Clean("./plugins/custom/echo-plugin"), filepath.Clean("./vendor/plugins/inspect.so")}
+	for i := range wantPaths {
+		wantPaths[i] = filepath.ToSlash(filepath.Clean(wantPaths[i]))
+	}
+	for i := range loadedPaths {
+		loadedPaths[i] = filepath.ToSlash(filepath.Clean(loadedPaths[i]))
+	}
+	sort.Strings(wantPaths)
+	sort.Strings(loadedPaths)
+	if len(loadedPaths) != len(wantPaths) || loadedPaths[0] != wantPaths[0] || loadedPaths[1] != wantPaths[1] {
+		t.Fatalf("loaded plugin paths = %v, want %v", loadedPaths, wantPaths)
+	}
+
+	sort.Strings(observedTools)
+	if !containsString(observedTools, "echo-plugin") || !containsString(observedTools, "inspect.so") {
+		t.Fatalf("observed tools = %v, want loaded plugin tool names present", observedTools)
+	}
+
+	if containsString(observedTools, "") {
+		t.Fatalf("observed tools contains empty name: %v", observedTools)
+	}
+}
+
+type stubCLIPluginTool struct {
+	name   string
+	closed bool
+}
+
+func (p *stubCLIPluginTool) Name() string { return p.name }
+
+func (p *stubCLIPluginTool) Description() string { return "stub cli plugin" }
+
+func (p *stubCLIPluginTool) Schema() string { return `{"type":"object"}` }
+
+func (p *stubCLIPluginTool) Capabilities() []string { return []string{"filesystem.read"} }
+
+func (p *stubCLIPluginTool) SafetyLevel() domain.SafetyLevel { return domain.SafetyLevelLow }
+
+func (p *stubCLIPluginTool) ContractVersion() string { return pluginruntime.ContractVersion }
+
+func (p *stubCLIPluginTool) Execute(_ context.Context, call domain.ToolCall) (domain.ToolResult, error) {
+	return domain.ToolResult{ToolName: p.name, Output: call.Input}, nil
+}
+
+func (p *stubCLIPluginTool) Close() error {
+	p.closed = true
+	return nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

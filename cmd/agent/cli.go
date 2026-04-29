@@ -9,13 +9,17 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"zheng-harness/internal/config"
 	"zheng-harness/internal/domain"
 	"zheng-harness/internal/llm"
+	"zheng-harness/internal/orchestration"
+	pluginruntime "zheng-harness/internal/plugin"
 	"zheng-harness/internal/runtime"
 	"zheng-harness/internal/store"
 	"zheng-harness/internal/tools"
@@ -24,6 +28,12 @@ import (
 
 const defaultDBPath = "./agent.db"
 
+const (
+	defaultMultiAgentMaxWorkers = 4
+	aggregationFlagAllSucceed   = "all-succeed"
+	aggregationFlagBestEffort   = "best-effort"
+)
+
 type cliApp struct {
 	stdout       io.Writer
 	stderr       io.Writer
@@ -31,11 +41,32 @@ type cliApp struct {
 	newSession   func(string) (*store.SQLiteSessionStore, error)
 	newMemory    func(string) (*store.SQLiteMemoryStore, error)
 	newExecutor  func() domain.ToolExecutor
+	newPluginManager func(string) *pluginruntime.PluginManager
+	pluginExecutorFactory func(domain.ToolExecutor, pluginCLIOptions) (domain.ToolExecutor, error)
 	newModel     func() domain.Model
 	newVerifier  func(domain.ToolExecutor) domain.Verifier
+	runEngine     func(context.Context, runtime.Engine, domain.Task) (domain.Session, domain.Plan, []domain.Step, error)
+	runStreamEngine func(context.Context, runtime.Engine, domain.Task) (*runtime.EventChannel, domain.Session, domain.Plan, []domain.Step, error)
+	runMultiAgent func(context.Context, runtime.Engine, domain.Task, multiAgentOptions) (domain.Session, domain.Plan, []domain.Step, error)
 	notifySignal func(chan<- os.Signal, ...os.Signal)
 	stopSignal   func(chan<- os.Signal)
 	now          func() time.Time
+}
+
+type streamResult struct {
+	session domain.Session
+	plan    domain.Plan
+	steps   []domain.Step
+	err     error
+}
+
+type streamConsumer struct {
+	stdout         io.Writer
+	stderr         io.Writer
+	jsonMode       bool
+	sessionID      string
+	toolStartedAt  map[string]time.Time
+	hasInlineToken bool
 }
 
 type runJSONOutput struct {
@@ -69,9 +100,28 @@ type taskMetadataFlags struct {
 	VerificationPolicy string
 }
 
-// configFlagNames contains the flag names that config.Load recognizes.
-// These are the only flags that should be passed to config.Load.
-// Other flags like --task, --session, --db, --json are run/resume/inspect specific.
+type pluginCLIOptions struct {
+	DiscoveryDir string
+	Names        []string
+	AllowedPaths []string
+}
+
+type multiAgentOptions struct {
+	Decompose  bool
+	MaxWorkers int
+	Aggregation string
+}
+
+type pluginExecutor struct {
+	base     domain.ToolExecutor
+	registry *tools.Registry
+	plugins  map[string]pluginruntime.PluginTool
+	manager  *pluginruntime.PluginManager
+}
+
+// configFlagNames 包含 config.Load 可识别的标志名称。
+// 这些是唯一应传递给 config.Load 的标志。
+// 其他诸如 --task、--session、--db、--json 的标志仅用于 run/resume/inspect。
 var configFlagNames = map[string]bool{
 	"config":          true,
 	"model":           true,
@@ -102,23 +152,23 @@ func (s *stringSliceFlag) Set(value string) error {
 	return nil
 }
 
-// filterConfigArgs extracts only the config-related flags from args.
-// This prevents "flag provided but not defined" errors when passing
-// run/resume/inspect subcommand arguments to config.Load.
+// filterConfigArgs 仅从参数中提取与配置相关的标志。
+// 这样可避免在传递
+// run/resume/inspect 子命令参数给 config.Load 时出现“flag provided but not defined”错误。
 func filterConfigArgs(args []string) []string {
 	var filtered []string
 	i := 0
 	for i < len(args) {
 		arg := args[i]
-		// Check if this arg is a config flag (handles both -flag and --flag forms)
+		// 检查该参数是否为配置标志（同时处理 -flag 与 --flag 两种形式）。
 		flagName := strings.TrimLeft(arg, "-")
 		if equalsIndex := strings.Index(flagName, "="); equalsIndex != -1 {
 			flagName = flagName[:equalsIndex]
 		}
 		if configFlagNames[flagName] {
 			filtered = append(filtered, arg)
-			// All config flags take a value. If using -flag=value form, value is already included.
-			// If using -flag value form, need to include the next arg as the value.
+			// 所有配置标志都带有值；如果使用 -flag=value 形式，则值已包含在参数中。
+			// 如果使用 -flag value 形式，则需要将下一个参数一并作为值。
 			if !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
 				filtered = append(filtered, args[i])
@@ -174,9 +224,16 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			}
 			return executor
 		},
+		newPluginManager: pluginruntime.NewManager,
 		newModel: modelFactory,
 		newVerifier: func(executor domain.ToolExecutor) domain.Verifier {
 			return newVerifierFromConfig(cfg, executor)
+		},
+		runEngine: func(ctx context.Context, engine runtime.Engine, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
+			return engine.Run(ctx, task)
+		},
+		runStreamEngine: func(ctx context.Context, engine runtime.Engine, task domain.Task) (*runtime.EventChannel, domain.Session, domain.Plan, []domain.Step, error) {
+			return engine.RunStream(ctx, task)
 		},
 		notifySignal: signal.Notify,
 		stopSignal:   signal.Stop,
@@ -238,8 +295,8 @@ func isRootHelpArg(arg string) bool {
 func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
-	// Dummy --config and --provider flags to allow CLI to accept them without error.
-	// The actual config loading happens in runCLI before this is called.
+	// 这里定义占位的 --config 和 --provider 标志，使 CLI 能无报错地接收它们。
+	// 实际的配置加载会在调用此函数之前于 runCLI 中完成。
 	_ = fs.String("config", "", "config file path (unused in subcommand)")
 	_ = fs.String("provider", "", "provider (unused in subcommand)")
 	_ = fs.String("model", "", "model (unused in subcommand)")
@@ -250,6 +307,11 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	_ = fs.String("verify-mode", "", "verify mode (unused in subcommand)")
 	var allowCommands stringSliceFlag
 	fs.Var(&allowCommands, "allow-command", "additional allowed command (repeatable)")
+	var plugins stringSliceFlag
+	var allowedPlugins stringSliceFlag
+	pluginDir := fs.String("plugin-dir", "./plugins", "plugin discovery directory")
+	fs.Var(&plugins, "plugin", "plugin name or path to load (repeatable)")
+	fs.Var(&allowedPlugins, "allow-plugin", "explicitly allowed plugin path (repeatable)")
 	taskInput := fs.String("task", "", "task description")
 	taskType := fs.String("task-type", "", "optional general task type (coding, research, file_workflow, general)")
 	protocolHint := fs.String("task-protocol", "", "optional task protocol hint")
@@ -257,6 +319,10 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
 	maxSteps := fs.Int("max-steps", a.defaultMaxSteps(), "maximum runtime steps")
 	jsonMode := fs.Bool("json", false, "emit machine-readable JSON")
+	streamMode := fs.Bool("stream", false, "stream runtime events to stdout")
+	decompose := fs.Bool("decompose", false, "enable multi-agent task decomposition")
+	maxWorkers := fs.Int("max-workers", defaultMultiAgentMaxWorkers, "maximum concurrent multi-agent workers")
+	aggregation := fs.String("aggregation", aggregationFlagAllSucceed, "multi-agent aggregation strategy (all-succeed|best-effort)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -266,8 +332,23 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	if *maxSteps <= 0 {
 		return errors.New("run requires --max-steps > 0")
 	}
+	multiAgent, err := normalizeMultiAgentOptions(*decompose, *maxWorkers, *aggregation)
+	if err != nil {
+		return err
+	}
 	if len(allowCommands) > 0 {
 		a = a.withExtraAllowedCommands([]string(allowCommands))
+	}
+	if len(plugins) > 0 {
+		updatedApp, err := a.withPluginOptions(pluginCLIOptions{
+			DiscoveryDir: strings.TrimSpace(*pluginDir),
+			Names:        []string(plugins),
+			AllowedPaths: []string(allowedPlugins),
+		})
+		if err != nil {
+			return err
+		}
+		a = updatedApp
 	}
 
 	now := a.now()
@@ -290,6 +371,9 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	}
 
 	executor := a.newExecutor()
+	if closer, ok := executor.(interface{ Close() error }); ok {
+		defer func() { _ = closer.Close() }()
+	}
 	engine := runtime.Engine{
 		Model:          a.newModel(),
 		Tools:          executor,
@@ -318,7 +402,16 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 		return fmt.Errorf("save task metadata: %w", err)
 	}
 
-	session, plan, steps, runErr := engine.Run(runCtx, task)
+	if *streamMode {
+		result, err := a.runStreamingCommand(runCtx, engine, task, *jsonMode, sessionStore, sessionID)
+		if err != nil {
+			return err
+		}
+		_ = result
+		return nil
+	}
+
+	session, plan, steps, runErr := a.executeTask(runCtx, engine, task, multiAgent)
 	session.ID = sessionID
 	if ctxErr := runCtx.Err(); ctxErr != nil && session.Status != domain.SessionStatusSuccess {
 		session.Status = domain.SessionStatusInterrupted
@@ -346,8 +439,8 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
-	// Dummy --config and --provider flags to allow CLI to accept them without error.
-	// The actual config loading happens in runCLI before this is called.
+	// 这里定义占位的 --config 和 --provider 标志，使 CLI 能无报错地接收它们。
+	// 实际的配置加载会在调用此函数之前于 runCLI 中完成。
 	_ = fs.String("config", "", "config file path (unused in subcommand)")
 	_ = fs.String("provider", "", "provider (unused in subcommand)")
 	_ = fs.String("model", "", "model (unused in subcommand)")
@@ -358,9 +451,16 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 	_ = fs.String("verify-mode", "", "verify mode (unused in subcommand)")
 	var allowCommands stringSliceFlag
 	fs.Var(&allowCommands, "allow-command", "additional allowed command (repeatable)")
+	var plugins stringSliceFlag
+	var allowedPlugins stringSliceFlag
+	pluginDir := fs.String("plugin-dir", "./plugins", "plugin discovery directory")
+	fs.Var(&plugins, "plugin", "plugin name or path to load (repeatable)")
+	fs.Var(&allowedPlugins, "allow-plugin", "explicitly allowed plugin path (repeatable)")
 	sessionID := fs.String("session", "", "session identifier")
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
 	maxSteps := fs.Int("max-steps", a.defaultMaxSteps(), "maximum runtime steps")
+	jsonMode := fs.Bool("json", false, "emit machine-readable JSON")
+	streamMode := fs.Bool("stream", false, "stream runtime events to stdout")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -369,6 +469,17 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 	}
 	if len(allowCommands) > 0 {
 		a = a.withExtraAllowedCommands([]string(allowCommands))
+	}
+	if len(plugins) > 0 {
+		updatedApp, err := a.withPluginOptions(pluginCLIOptions{
+			DiscoveryDir: strings.TrimSpace(*pluginDir),
+			Names:        []string(plugins),
+			AllowedPaths: []string(allowedPlugins),
+		})
+		if err != nil {
+			return err
+		}
+		a = updatedApp
 	}
 	if *maxSteps <= 0 {
 		return errors.New("resume requires --max-steps > 0")
@@ -385,12 +496,20 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 		return err
 	}
 
-	a.emitResumeResult(session, plan, steps, false)
+	if !*streamMode {
+		a.emitResumeResult(session, plan, steps, false)
+	}
 	if isTerminalStatus(session.Status) {
+		if *streamMode {
+			a.emitResumeResult(session, plan, steps, false)
+		}
 		return nil
 	}
 
 	executor := a.newExecutor()
+	if closer, ok := executor.(interface{ Close() error }); ok {
+		defer func() { _ = closer.Close() }()
+	}
 	engine := runtime.Engine{
 		Model:          a.newModel(),
 		Tools:          executor,
@@ -410,7 +529,12 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 		return taskErr
 	}
 
-	session, plan, steps, err = engine.Run(runCtx, continuedTask)
+	if *streamMode {
+		_, err := a.runStreamingCommand(runCtx, engine, continuedTask, *jsonMode, sessionStore, *sessionID)
+		return err
+	}
+
+	session, plan, steps, err = a.executeRun(runCtx, engine, continuedTask)
 	aliasStore := newSessionAliasStore(sessionStore, ctx, *sessionID)
 	session.ID = *sessionID
 	if ctxErr := runCtx.Err(); ctxErr != nil && session.Status != domain.SessionStatusSuccess {
@@ -438,8 +562,8 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 func (a cliApp) inspectCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
-	// Dummy --config and --provider flags to allow CLI to accept them without error.
-	// The actual config loading happens in runCLI before this is called.
+	// 这里定义占位的 --config 和 --provider 标志，使 CLI 能无报错地接收它们。
+	// 实际的配置加载会在调用此函数之前于 runCLI 中完成。
 	_ = fs.String("config", "", "config file path (unused in subcommand)")
 	_ = fs.String("provider", "", "provider (unused in subcommand)")
 	_ = fs.String("model", "", "model (unused in subcommand)")
@@ -505,6 +629,161 @@ func (a cliApp) withExtraAllowedCommands(commands []string) cliApp {
 		return executor
 	}
 	return a
+}
+
+func (a cliApp) withPluginOptions(options pluginCLIOptions) (cliApp, error) {
+	previous := a.newExecutor
+	pluginOptions := normalizePluginCLIOptions(options)
+	if len(pluginOptions.Names) == 0 {
+		return a, nil
+	}
+	a.newExecutor = func() domain.ToolExecutor {
+		base := previous()
+		factory := a.pluginExecutorFactory
+		if factory == nil {
+			factory = a.buildPluginExecutor
+		}
+		executor, err := factory(base, pluginOptions)
+		if err != nil {
+			return pluginInitializationErrorExecutor{err: err}
+		}
+		return executor
+	}
+	return a, nil
+}
+
+func (a cliApp) buildPluginExecutor(base domain.ToolExecutor, options pluginCLIOptions) (domain.ToolExecutor, error) {
+	managerFactory := a.newPluginManager
+	if managerFactory == nil {
+		managerFactory = pluginruntime.NewManager
+	}
+	manager := managerFactory(options.DiscoveryDir)
+	if manager == nil {
+		return nil, errors.New("plugin manager factory returned nil")
+	}
+	manager.Policy = tools.SafetyPolicy{
+		WorkspaceRoot:      ".",
+		AllowedPluginPaths: append(append([]string(nil), a.cfg.Runtime.AllowedPluginPaths...), options.AllowedPaths...),
+		PluginCapabilities: append([]string(nil), a.cfg.Runtime.PluginCapabilities...),
+	}
+	registry := cloneExecutorRegistry(base)
+	loaded := make(map[string]pluginruntime.PluginTool, len(options.Names))
+	for _, path := range resolvePluginTargets(options) {
+		if err := manager.Policy.ValidatePluginPath(path); err != nil {
+			_ = manager.CloseAll()
+			return nil, err
+		}
+		tool, err := manager.Load(context.Background(), path)
+		if err != nil {
+			_ = manager.CloseAll()
+			return nil, err
+		}
+		if err := registry.Register(toToolDefinition(tool)); err != nil {
+			_ = manager.CloseAll()
+			return nil, err
+		}
+		loaded[tool.Name()] = tool
+	}
+	return &pluginExecutor{base: base, registry: registry, plugins: loaded, manager: manager}, nil
+}
+
+func resolvePluginTargets(options pluginCLIOptions) []string {
+	targets := make([]string, 0, len(options.Names))
+	for _, name := range options.Names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if isPluginPathReference(trimmed) {
+			targets = append(targets, trimmed)
+			continue
+		}
+		targets = append(targets, filepath.Join(options.DiscoveryDir, trimmed))
+	}
+	return targets
+}
+
+func normalizePluginCLIOptions(options pluginCLIOptions) pluginCLIOptions {
+	options.DiscoveryDir = strings.TrimSpace(options.DiscoveryDir)
+	if options.DiscoveryDir == "" {
+		options.DiscoveryDir = "./plugins"
+	}
+	options.Names = normalizeStringValues(options.Names)
+	options.AllowedPaths = normalizeStringValues(options.AllowedPaths)
+	return options
+}
+
+func normalizeStringValues(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
+}
+
+func isPluginPathReference(value string) bool {
+	return strings.Contains(value, "/") || strings.Contains(value, `\\`) || filepath.Ext(value) != ""
+}
+
+func cloneExecutorRegistry(base domain.ToolExecutor) *tools.Registry {
+	registry := tools.NewRegistry()
+	provider, ok := base.(interface{ Registry() *tools.Registry })
+	if !ok || provider.Registry() == nil {
+		return registry
+	}
+	for _, def := range provider.Registry().List() {
+		_ = registry.Register(def)
+	}
+	return registry
+}
+
+func toToolDefinition(tool pluginruntime.PluginTool) tools.ToolDefinition {
+	return tools.ToolDefinition{
+		Name:           tool.Name(),
+		Description:    tool.Description(),
+		Schema:         tool.Schema(),
+		DefaultTimeout: 30 * time.Second,
+		SafetyLevel:    tool.SafetyLevel(),
+		Handler:        tool.Execute,
+	}
+}
+
+func (e *pluginExecutor) Execute(ctx context.Context, call domain.ToolCall) (domain.ToolResult, error) {
+	if tool, ok := e.plugins[call.Name]; ok {
+		return tool.Execute(ctx, call)
+	}
+	return e.base.Execute(ctx, call)
+}
+
+func (e *pluginExecutor) Registry() *tools.Registry {
+	if e == nil {
+		return nil
+	}
+	return e.registry
+}
+
+func (e *pluginExecutor) Close() error {
+	if e == nil || e.manager == nil {
+		return nil
+	}
+	return e.manager.CloseAll()
+}
+
+type pluginInitializationErrorExecutor struct{ err error }
+
+func (e pluginInitializationErrorExecutor) Execute(_ context.Context, call domain.ToolCall) (domain.ToolResult, error) {
+	return domain.ToolResult{ToolName: call.Name}, e.err
+}
+
+func (e pluginInitializationErrorExecutor) Registry() *tools.Registry {
+	return tools.NewRegistry()
 }
 
 func (a cliApp) defaultMaxSteps() int {
@@ -609,10 +888,311 @@ func (a cliApp) emitInspectResult(jsonMode bool, task domain.Task, session domai
 
 func (a cliApp) printUsage() {
 	_, _ = fmt.Fprintln(a.stderr, "Usage: zheng-agent <run|resume|inspect> [flags]")
-	_, _ = fmt.Fprintln(a.stderr, "  run --task \"task description\" [--db ./agent.db] [--json]")
-	_, _ = fmt.Fprintln(a.stderr, "  resume --session <id> [--db ./agent.db]")
+	_, _ = fmt.Fprintln(a.stderr, "  run --task \"task description\" [--db ./agent.db] [--json] [--stream] [--decompose] [--max-workers 4] [--aggregation all-succeed]")
+	_, _ = fmt.Fprintln(a.stderr, "  resume --session <id> [--db ./agent.db] [--json] [--stream]")
 	_, _ = fmt.Fprintln(a.stderr, "  inspect --session <id> [--db ./agent.db] [--json]")
 	_, _ = fmt.Fprintln(a.stderr, "  --help, -h, help  Show this help")
+}
+
+func normalizeMultiAgentOptions(decompose bool, maxWorkers int, aggregation string) (multiAgentOptions, error) {
+	normalized := multiAgentOptions{
+		Decompose:  decompose,
+		MaxWorkers: maxWorkers,
+		Aggregation: strings.TrimSpace(aggregation),
+	}
+	if normalized.MaxWorkers <= 0 {
+		return multiAgentOptions{}, errors.New("run requires --max-workers > 0")
+	}
+	switch normalized.Aggregation {
+	case "", aggregationFlagAllSucceed:
+		normalized.Aggregation = aggregationFlagAllSucceed
+	case aggregationFlagBestEffort:
+	default:
+		return multiAgentOptions{}, fmt.Errorf("run requires --aggregation to be one of %q or %q", aggregationFlagAllSucceed, aggregationFlagBestEffort)
+	}
+	return normalized, nil
+}
+
+func (a cliApp) executeTask(ctx context.Context, engine runtime.Engine, task domain.Task, options multiAgentOptions) (domain.Session, domain.Plan, []domain.Step, error) {
+	if options.Decompose {
+		return a.executeMultiAgentRun(ctx, engine, task, options)
+	}
+	return a.executeRun(ctx, engine, task)
+}
+
+func (a cliApp) executeRun(ctx context.Context, engine runtime.Engine, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
+	if a.runEngine != nil {
+		return a.runEngine(ctx, engine, task)
+	}
+	return engine.Run(ctx, task)
+}
+
+func (a cliApp) executeMultiAgentRun(ctx context.Context, engine runtime.Engine, task domain.Task, options multiAgentOptions) (domain.Session, domain.Plan, []domain.Step, error) {
+	if a.runMultiAgent != nil {
+		return a.runMultiAgent(ctx, engine, task, options)
+	}
+
+	decomposition := orchestration.TaskDecomposition{
+		TaskID: task.ID,
+		Subtasks: []orchestration.Subtask{{
+			ID:             task.ID,
+			Description:    task.Description,
+			ExpectedOutput: task.Goal,
+			Status:         orchestration.SubtaskStatusPending,
+		}},
+	}
+	if _, err := orchestration.NewDAGScheduler(decomposition); err != nil {
+		return domain.Session{}, domain.Plan{}, nil, err
+	}
+
+	var (
+		mu      sync.Mutex
+		session domain.Session
+		plan    domain.Plan
+		steps   []domain.Step
+	)
+	orch := orchestration.Orchestrator{
+		MaxWorkers: options.MaxWorkers,
+		WorkerFactory: func(subtask orchestration.Subtask) orchestration.Worker {
+			return orchestration.NewWorker(func(workerCtx context.Context, _ orchestration.Subtask, _ orchestration.TaskDecomposition) error {
+				runSession, runPlan, runSteps, err := a.executeRun(workerCtx, engine, task)
+				mu.Lock()
+				session = runSession
+				plan = runPlan
+				steps = append([]domain.Step(nil), runSteps...)
+				mu.Unlock()
+				return err
+			})
+		},
+	}
+	if err := orch.Start(ctx); err != nil {
+		return domain.Session{}, domain.Plan{}, nil, err
+	}
+	if err := orch.SubmitTask(ctx, decomposition); err != nil {
+		orch.Stop()
+		_ = orch.Wait()
+		return domain.Session{}, domain.Plan{}, nil, err
+	}
+	orch.Stop()
+	waitErr := orch.Wait()
+
+	results := collectWorkerResults(orch.ResultChannel)
+	taskResults := make([]orchestration.TaskResult, 0, len(results))
+	for _, result := range results {
+		verificationStatus := domain.VerificationStatusPassed
+		if result.Err != nil || result.Status == orchestration.SubtaskStatusFailed {
+			verificationStatus = domain.VerificationStatusFailed
+		}
+		taskResults = append(taskResults, orchestration.TaskResult{
+			SubtaskID:          result.SubtaskID,
+			Output:             result.Output,
+			Error:              result.Err,
+			VerificationStatus: verificationStatus,
+		})
+	}
+	aggregator := &orchestration.Aggregator{Strategy: toAggregationStrategy(options.Aggregation)}
+	_, aggregationErr := aggregator.Aggregate(taskResults)
+	if waitErr != nil {
+		return session, plan, steps, waitErr
+	}
+	if aggregationErr != nil {
+		return session, plan, steps, aggregationErr
+	}
+	return session, plan, steps, nil
+}
+
+func toAggregationStrategy(flagValue string) orchestration.AggregationStrategy {
+	switch strings.TrimSpace(flagValue) {
+	case aggregationFlagBestEffort:
+		return orchestration.AggregationStrategyBestEffort
+	default:
+		return orchestration.AggregationStrategyAllSucceed
+	}
+}
+
+func collectWorkerResults(results <-chan orchestration.WorkerResult) []orchestration.WorkerResult {
+	collected := make([]orchestration.WorkerResult, 0)
+	for result := range results {
+		collected = append(collected, result)
+	}
+	return collected
+}
+
+func (a cliApp) executeRunStream(ctx context.Context, engine runtime.Engine, task domain.Task) (*runtime.EventChannel, domain.Session, domain.Plan, []domain.Step, error) {
+	if a.runStreamEngine != nil {
+		return a.runStreamEngine(ctx, engine, task)
+	}
+	return engine.RunStream(ctx, task)
+}
+
+func (a cliApp) runStreamingCommand(ctx context.Context, engine runtime.Engine, task domain.Task, jsonMode bool, sessionStore *store.SQLiteSessionStore, sessionID string) (streamResult, error) {
+	events, _, _, _, err := a.executeRunStream(ctx, engine, task)
+	if err != nil {
+		return streamResult{}, err
+	}
+	if events == nil {
+		return streamResult{}, errors.New("streaming runtime returned nil event channel")
+	}
+
+	consumer := streamConsumer{
+		stdout:        a.stdout,
+		stderr:        a.stderr,
+		jsonMode:      jsonMode,
+		sessionID:     sessionID,
+		toolStartedAt: make(map[string]time.Time),
+	}
+	var (
+		consumeErr   error
+		consumeErrMu sync.Mutex
+	)
+	setConsumeErr := func(err error) {
+		if err == nil {
+			return
+		}
+		consumeErrMu.Lock()
+		defer consumeErrMu.Unlock()
+		if consumeErr == nil {
+			consumeErr = err
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for event := range events.Events() {
+			if err := consumer.consume(event); err != nil {
+				setConsumeErr(err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	if consumeErr != nil {
+		return streamResult{}, consumeErr
+	}
+
+	result, err := a.loadStreamResult(context.WithoutCancel(ctx), sessionStore, sessionID)
+	if err != nil {
+		return streamResult{}, err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil && result.session.Status != domain.SessionStatusSuccess {
+		return result, ctxErr
+	}
+	return result, result.err
+}
+
+func (a cliApp) loadStreamResult(ctx context.Context, sessionStore *store.SQLiteSessionStore, sessionID string) (streamResult, error) {
+	session, plan, steps, err := sessionStore.ResumeSession(ctx, sessionID)
+	if err != nil {
+		return streamResult{}, err
+	}
+	var resultErr error
+	return streamResult{session: session, plan: plan, steps: steps, err: resultErr}, nil
+}
+
+func (c *streamConsumer) consume(event domain.StreamingEvent) error {
+	if event.Type == domain.EventSessionComplete {
+		c.normalizeSessionCompleteEvent(&event)
+	}
+	if c.jsonMode {
+		encoder := json.NewEncoder(c.stdout)
+		return encoder.Encode(event)
+	}
+
+	switch event.Type {
+	case domain.EventTokenDelta:
+		var payload domain.TokenDeltaPayload
+		if err := event.GetPayload(&payload); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(c.stdout, payload.Content); err != nil {
+			return err
+		}
+		c.hasInlineToken = true
+		return nil
+	case domain.EventToolStart:
+		var payload domain.ToolStartPayload
+		if err := event.GetPayload(&payload); err != nil {
+			return err
+		}
+		c.ensureLineBreak()
+		c.toolStartedAt[c.toolKey(event.StepIndex, payload.ToolName)] = event.Timestamp
+		_, err := fmt.Fprintf(c.stdout, "[Tool: %s]\n", payload.ToolName)
+		return err
+	case domain.EventToolEnd:
+		var payload domain.ToolEndPayload
+		if err := event.GetPayload(&payload); err != nil {
+			return err
+		}
+		c.ensureLineBreak()
+		duration := c.formatDuration(event.StepIndex, payload.ToolName, event.Timestamp)
+		_, err := fmt.Fprintf(c.stdout, "[Tool: %s] done (%s)\n", payload.ToolName, duration)
+		return err
+	case domain.EventStepComplete:
+		var payload domain.StepCompletePayload
+		if err := event.GetPayload(&payload); err != nil {
+			return err
+		}
+		c.ensureLineBreak()
+		_, err := fmt.Fprintf(c.stdout, "--- Step %d complete ---\n", event.StepIndex)
+		return err
+	case domain.EventError:
+		var payload domain.ErrorPayload
+		if err := event.GetPayload(&payload); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(c.stderr, "ERROR: %s\n", payload.Message)
+		return err
+	case domain.EventSessionComplete:
+		var payload domain.SessionCompletePayload
+		if err := event.GetPayload(&payload); err != nil {
+			return err
+		}
+		c.ensureLineBreak()
+		_, err := fmt.Fprintf(c.stdout, "Session: %s\nStatus: %s\n", payload.SessionID, payload.Status)
+		return err
+	default:
+		return nil
+	}
+}
+
+func (c *streamConsumer) toolKey(stepIndex int, toolName string) string {
+	return fmt.Sprintf("%d:%s", stepIndex, toolName)
+}
+
+func (c *streamConsumer) formatDuration(stepIndex int, toolName string, endedAt time.Time) string {
+	startedAt, ok := c.toolStartedAt[c.toolKey(stepIndex, toolName)]
+	if !ok || startedAt.IsZero() || endedAt.Before(startedAt) {
+		return "unknown"
+	}
+	delete(c.toolStartedAt, c.toolKey(stepIndex, toolName))
+	return endedAt.Sub(startedAt).String()
+}
+
+func (c *streamConsumer) ensureLineBreak() {
+	if !c.hasInlineToken {
+		return
+	}
+	_, _ = fmt.Fprintln(c.stdout)
+	c.hasInlineToken = false
+}
+
+func (c *streamConsumer) normalizeSessionCompleteEvent(event *domain.StreamingEvent) {
+	if event == nil || strings.TrimSpace(c.sessionID) == "" {
+		return
+	}
+	var payload domain.SessionCompletePayload
+	if err := event.GetPayload(&payload); err != nil {
+		return
+	}
+	payload.SessionID = c.sessionID
+	normalized, err := domain.NewStreamingEvent(event.Type, event.StepIndex, payload)
+	if err != nil {
+		return
+	}
+	normalized.Timestamp = event.Timestamp
+	*event = *normalized
 }
 
 func writeJSON(w io.Writer, payload any) {

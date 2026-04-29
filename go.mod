@@ -1,10 +1,11 @@
 module zheng-harness
 
-go 1.22.0
+go 1.26.0
 
 require (
 	github.com/bmatcuk/doublestar/v2 v2.0.4
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
+	golang.org/x/sync v0.0.0
 	modernc.org/sqlite v1.34.5
 )
 
@@ -19,3 +20,5 @@ require (
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.8.0 // indirect
 )
+
+replace golang.org/x/sync => ./third_party/golang.org/x/sync

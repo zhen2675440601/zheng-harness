@@ -1,0 +1,48 @@
+#!/bin/sh
+# pre-commit hook - 校验暂存区代码注释语言
+# 参考 CONTRIBUTING.md 规范：所有注释必须使用中文
+#
+# 检查规则：
+# 1. 行注释 // 必须包含中文
+# 2. 块注释 /* */ 必须包含中文
+# 3. 跳过 test 文件和生成文件
+#
+# 使用方式: 将此文件复制到 .git/hooks/pre-commit
+#          或运行: make install-hooks
+
+# 获取暂存的文件（只检查新增/修改的 .go 文件）
+staged_files=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' | grep -v '_test\.go$' | grep -v '^vendor/')
+
+if [ -z "$staged_files" ]; then
+    echo "✅ 没有需要检查的 Go 文件"
+    exit 0
+fi
+
+echo "检查代码注释规范..."
+
+# 检查是否存在非中文注释
+# 匹配模式：// 或 /* */ 后面跟着纯英文（不含中文）
+for file in $staged_files; do
+    # 跳过生成的文件
+    if echo "$file" | grep -qE '(pb\.go|generated\.go|bindata\.go)'; then
+        continue
+    fi
+
+    # 检查 // 类型的行注释是否包含中文
+    # 排除空注释和纯符号注释
+    lines_with_english_comments=$(grep -n '^[[:space:]]*//[[:space:]]*[^[:space:]]*$' "$file" 2>/dev/null | \
+        grep -v '[\u4e00-\u9fff]' | \
+        grep -E '^[[:space:]]*//[[:space:]]*[a-zA-Z]' | \
+        head -5)
+
+    if [ -n "$lines_with_english_comments" ]; then
+        echo "❌ 文件 $file 包含非中文注释："
+        echo "$lines_with_english_comments" | head -3
+        echo ""
+        echo "参考 CONTRIBUTING.md 规范：所有注释必须使用中文"
+        exit 1
+    fi
+done
+
+echo "✅ 代码注释规范校验通过"
+exit 0

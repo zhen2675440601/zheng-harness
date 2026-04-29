@@ -1,0 +1,51 @@
+#!/bin/sh
+# commit-msg hook - 校验提交信息格式和语言
+# 参考 CONTRIBUTING.md 规范
+
+COMMIT_MSG_FILE="$1"
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# 允许的类型
+VALID_TYPES="feat|fix|refactor|perf|test|docs|chore|style|ci"
+
+# 检查第一行（标题）
+first_line=$(echo "$COMMIT_MSG" | head -n 1)
+
+# 必须包含中文
+if ! echo "$first_line" | grep -q '[\u4e00-\u9fff]'; then
+    echo "❌ 提交信息必须使用中文编写"
+    echo ""
+    echo "参考 CONTRIBUTING.md 规范："
+    echo "  feat(agent): 添加会话恢复功能"
+    echo "  fix(runtime): 修复任务超时问题"
+    exit 1
+fi
+
+# 检查是否符合 <type>(<scope>): <title> 格式
+if ! echo "$first_line" | grep -qE "^(${VALID_TYPES})(\([^)]+\))?: "; then
+    echo "❌ 提交信息格式不正确"
+    echo ""
+    echo "正确格式: <类型>(<范围>): <标题>"
+    echo "示例: feat(agent): 添加会话恢复功能"
+    echo ""
+    echo "可用类型: feat, fix, refactor, perf, test, docs, chore, style, ci"
+    echo "可选范围: agent, runtime, store, llm, verify, cli, config, tools"
+    exit 1
+fi
+
+# 检查标题长度（不超过50字符）
+title=$(echo "$first_line" | sed -n 's/^[^:]*: *//p')
+if [ ${#title} -gt 50 ]; then
+    echo "❌ 提交标题过长（当前 ${#title} 字符，最大 50）"
+    echo "标题: $title"
+    exit 1
+fi
+
+# 检查标题是否以句号结尾
+if echo "$title" | grep -q '。$'; then
+    echo "❌ 标题结尾不应使用句号"
+    exit 1
+fi
+
+echo "✅ 提交信息格式校验通过"
+exit 0
