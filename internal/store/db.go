@@ -71,12 +71,12 @@ CREATE INDEX IF NOT EXISTS idx_steps_session ON steps(session_id, step_index);
 CREATE INDEX IF NOT EXISTS idx_memory_lookup ON memory_entries(project_key, scope, memory_type, last_used_at);
 `
 
-// Database owns the SQLite connection and schema initialization.
+// Database 负责 SQLite 连接及其 schema 初始化。
 type Database struct {
 	db *sql.DB
 }
 
-// Open opens and initializes a SQLite database.
+// Open 打开并初始化一个 SQLite 数据库。
 func Open(path string) (*Database, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -90,7 +90,7 @@ func Open(path string) (*Database, error) {
 	return database, nil
 }
 
-// Init ensures the required schema exists.
+// Init 确保所需 schema 已存在。
 func (d *Database) Init(ctx context.Context) error {
 	if d == nil || d.db == nil {
 		return fmt.Errorf("database is not initialized")
@@ -99,7 +99,7 @@ func (d *Database) Init(ctx context.Context) error {
 	return err
 }
 
-// SQL exposes the underlying database handle for repositories.
+// SQL 为各仓储暴露底层数据库句柄。
 func (d *Database) SQL() *sql.DB {
 	if d == nil {
 		return nil
@@ -107,7 +107,7 @@ func (d *Database) SQL() *sql.DB {
 	return d.db
 }
 
-// Close releases the database handle.
+// Close 释放数据库句柄。
 func (d *Database) Close() error {
 	if d == nil || d.db == nil {
 		return nil

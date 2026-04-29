@@ -1,5 +1,4 @@
-// Package store contains persistence adapters and storage concerns.
+// Package store 包含持久化适配器与存储相关逻辑。
 //
-// Ownership: this package owns infrastructure storage implementations and must
-// remain outside the domain core.
+// 归属：该包负责基础设施层的存储实现，必须保持在领域核心之外。
 package store

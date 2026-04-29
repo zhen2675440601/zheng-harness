@@ -201,7 +201,7 @@ func TestSessionTaskMetadataPersistsAndReloads(t *testing.T) {
 		Goal:               plan.Summary,
 		Category:           domain.TaskCategoryFileWorkflow,
 		ProtocolHint:       "artifact-tracking file workflow",
-		VerificationPolicy: "checklist",
+		VerificationPolicy: "state_output",
 		CreatedAt:          now,
 	}
 
@@ -246,8 +246,8 @@ func TestSessionTaskMetadataPersistsAndReloads(t *testing.T) {
 	if got := taskPayload["category"]; got != string(domain.TaskCategoryFileWorkflow) {
 		t.Fatalf("config_json.task.category = %#v, want %q", got, domain.TaskCategoryFileWorkflow)
 	}
-	if got := taskPayload["verification_policy"]; got != "checklist" {
-		t.Fatalf("config_json.task.verification_policy = %#v, want checklist", got)
+	if got := taskPayload["verification_policy"]; got != "state_output" {
+		t.Fatalf("config_json.task.verification_policy = %#v, want state_output", got)
 	}
 }
 

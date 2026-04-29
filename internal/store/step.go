@@ -8,17 +8,17 @@ import (
 	"zheng-harness/internal/domain"
 )
 
-// StepRepository persists and restores inspectable runtime steps.
+// StepRepository 持久化并恢复可检查的运行时步骤。
 type StepRepository struct {
 	db *sql.DB
 }
 
-// NewStepRepository constructs a step repository.
+// NewStepRepository 构造步骤仓储。
 func NewStepRepository(database *Database) *StepRepository {
 	return &StepRepository{db: database.SQL()}
 }
 
-// Append stores a single step/event row.
+// Append 存储单条步骤/事件记录。
 func (r *StepRepository) Append(ctx context.Context, sessionID string, step domain.Step) error {
 	var toolName, toolInput, toolOutput, toolError string
 	var toolTimeout, toolDuration int64
@@ -59,7 +59,7 @@ INSERT OR REPLACE INTO steps (
 	return err
 }
 
-// LoadBySession restores all persisted steps for a session in order.
+// LoadBySession 按顺序恢复某个会话的全部已持久化步骤。
 func (r *StepRepository) LoadBySession(ctx context.Context, sessionID string) ([]domain.Step, error) {
 	rows, err := r.db.QueryContext(ctx, `
 SELECT step_index, action_type, action_summary, action_response,

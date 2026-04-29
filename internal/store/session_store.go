@@ -16,6 +16,8 @@ type SQLiteSessionStore struct {
 }
 
 type storedTask struct {
+	Description        string              `json:"description,omitempty"`
+	Goal               string              `json:"goal,omitempty"`
 	Category           domain.TaskCategory `json:"category,omitempty"`
 	ProtocolHint       string              `json:"protocol_hint,omitempty"`
 	VerificationPolicy string              `json:"verification_policy,omitempty"`
@@ -190,6 +192,12 @@ func (s *SQLiteSessionStore) LoadTask(ctx context.Context, sessionID string) (do
 	}
 
 	task.Category = stored.Category
+	if stored.Description != "" {
+		task.Description = stored.Description
+	}
+	if stored.Goal != "" {
+		task.Goal = stored.Goal
+	}
 	task.ProtocolHint = stored.ProtocolHint
 	task.VerificationPolicy = stored.VerificationPolicy
 	return task.Normalize(), true, nil
@@ -258,6 +266,8 @@ func newStoredTask(task domain.Task) *storedTask {
 		return nil
 	}
 	return &storedTask{
+		Description:        normalized.Description,
+		Goal:               normalized.Goal,
 		Category:           normalized.Category,
 		ProtocolHint:       normalized.ProtocolHint,
 		VerificationPolicy: normalized.VerificationPolicy,
