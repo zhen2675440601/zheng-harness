@@ -1,18 +1,46 @@
 # zheng-harness
 
-基于 Harness Engineering 思想实现的 **通用 Agent Harness Engine** Go MVP。v1 已完成通用任务协议扩展，支持 coding、research、file-workflow 等多种任务类型的端到端验证。
+基于 Harness Engineering 思想实现的 **通用 Agent Harness Engine** Go MVP。当前版本已完成通用任务协议扩展，并新增 streaming CLI 输出、新工具能力、插件系统与多 Agent 编排支持。
 
-v1 聚焦 **CLI-first、单进程、单代理、可验证、可恢复、可检查持久记忆**，避免过早平台化。
+**v1** 聚焦 **CLI-first、单进程、单代理、可验证、可恢复、可检查持久记忆**。  
+**v2** 新增 **streaming 实时输出、3 个新工具、双模式插件系统、多 Agent 编排**。
 
 **定位**: 通用任务执行引擎，支持 coding、research、file workflow 等多种任务类型。
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成**
 
-核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成。详细进度请见 [PROGRESS.md](PROGRESS.md)。
+核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证。详细进度请见 [PROGRESS.md](PROGRESS.md)。
 
 验证状态见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
+
+## v2 新增特性
+
+### 1. Streaming 实时输出
+- 增量 token delta 显示，实时查看 LLM 响应
+- Tool lifecycle 事件：工具调用开始/结束可视化
+- Step/Session completion 事件带摘要信息
+- CLI `--stream` 与 `--stream --json` (JSONL) 支持
+- 非 streaming provider 自动 fallback 包装
+
+### 2. 新工具能力
+- **web_fetch**: HTTP/S 网页抓取，域名白名单安全策略
+- **ask_user**: CLI 交互提示，支持选项验证与重试
+- **code_search**: 语言感知代码搜索，多种输出模式
+
+### 3. 双模式插件系统
+- **外部进程**: JSON-RPC 2.0 over stdio，跨平台
+- **原生 Go 插件**: .so 文件加载 (Linux/macOS)
+- 插件发现、版本验证、生命周期管理
+- 安全策略：路径白名单、能力声明
+
+### 4. 多 Agent 编排
+- Orchestrator-worker 架构
+- DAG 依赖感知调度
+- 有界并发控制 (默认 4 worker)
+- 结果聚合策略：AllSucceed/BestEffort
+- 取消传播与部分结果保留
 
 ## 快速开始
 
@@ -48,6 +76,9 @@ make test-cover
 
 ```bash
 go run ./cmd/agent run --task "inspect repository and propose next step" --task-type coding
+
+# streaming mode
+go run ./cmd/agent run --task "inspect repository and propose next step" --task-type coding --stream
 ```
 
 Supported `--task-type` values: `coding`, `research`, `file_workflow`, `general`. Each routes to a task-specific verifier.
@@ -63,6 +94,9 @@ Supported `--task-type` values: `coding`, `research`, `file_workflow`, `general`
 
 ```bash
 go run ./cmd/agent run --task "inspect repository and propose next step" --task-type coding
+
+# JSONL streaming output
+go run ./cmd/agent run --task "inspect repository and propose next step" --task-type coding --stream --json
 ```
 
 The `--task-type` flag selects the verification strategy:
@@ -85,6 +119,7 @@ go run ./cmd/agent run \
   --config ./zheng.json \
   --db ./agent.db \
   --max-steps 8 \
+  --stream \
   --json
 ```
 
@@ -133,6 +168,9 @@ go run ./cmd/agent run \
 
 ```bash
 go run ./cmd/agent resume --session session-1710000000000000000
+
+# resume remaining work with streaming
+go run ./cmd/agent resume --session session-1710000000000000000 --stream
 ```
 
 ### 检查会话状态
@@ -142,6 +180,8 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 ```
 
 默认 SQLite 数据文件位置是当前工作目录下的 `./agent.db`。
+
+Streaming mode uses runtime events for token deltas, tool lifecycle updates, step boundaries, and final session completion. Intermediate streaming events are not persisted; only final session/plan/step state is stored for `resume` and `inspect` continuity.
 
 ## 当前架构概览
 
@@ -158,6 +198,22 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 - `internal/config`：配置加载与环境变量覆盖
 - `internal/llm`：模型 Provider 边界
 - `cmd/agent`：CLI 入口与 `run` / `resume` / `inspect` 契约
+
+## 内置工具能力
+
+当前运行时默认提供以下内置工具：
+
+- 文件工具：`list_dir`, `read_file`, `write_file`, `edit_file`
+- 搜索工具：`glob`, `grep_search`, `code_search`
+- 交互工具：`ask_user`
+- Web 工具：`web_fetch`
+- 本地命令工具：`exec_command`
+
+其中：
+
+- `code_search` 支持语言过滤与多种输出模式
+- `ask_user` 支持 CLI 中断点式人工输入
+- `web_fetch` 支持 HTTP/HTTPS 抓取，并可通过安全策略配置域名 allowlist
 
 ### 核心端口
 
@@ -218,16 +274,14 @@ zheng-harness/
 7. 用 `go run ./cmd/agent ...` 手动验证 CLI 行为
 8. 如果改动影响架构边界或使用方式，更新 `README.md` / `docs/` / ADR
 
-## v1 明确不包含
+## 当前仍不包含
 
-- 多代理编排
-- 插件系统或动态加载工具
 - Web UI
 - Slack / Telegram / Discord 等网关
 - 向量数据库、embedding 检索、知识图谱
-- 面向 v2 的平台化设计文档
+- Provider / agent / verifier 插件（v2 仅支持 tool plugins）
 
-这些边界是有意为之，用于确保 MVP 保持小范围、可测试、可验证。
+**v2 已实现**: 多代理编排 (orchestrator-worker)、插件系统 (双模式：外部进程 + 原生 Go 插件)、streaming 输出、新工具 (web_fetch, ask_user, code_search)。
 
 ## ADR 索引
 

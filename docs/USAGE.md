@@ -1,6 +1,6 @@
 # CLI Usage
 
-`zheng-agent` 是一个 **通用 Agent Harness** CLI。v1 支持 coding、research、file workflow 等多种任务类型，每种任务类型路由到不同的验证器。
+`zheng-agent` 是一个 **通用 Agent Harness** CLI。当前版本支持 coding、research、file workflow 等多种任务类型，并支持实时 streaming 输出、resume/inspect 会话连续性，以及受约束的内置工具集。
 
 本文档描述已验证的 CLI 契约。验证证据见 [`validation-matrix.md`](validation-matrix.md)。
 
@@ -10,6 +10,10 @@
 zheng-agent run --task "inspect repository and propose next step"
 zheng-agent resume --session <id>
 zheng-agent inspect --session <id>
+
+# streaming mode
+zheng-agent run --task "inspect repository and propose next step" --stream
+zheng-agent resume --session <id> --stream
 ```
 
 默认 SQLite 数据库文件位置为当前工作目录下的 `./agent.db`。
@@ -55,6 +59,7 @@ go run ./cmd/agent run \
   --config ./zheng.json \
   --db ./agent.db \
   --max-steps 8 \
+  --stream \
   --json
 ```
 
@@ -66,6 +71,7 @@ go run ./cmd/agent run \
 - `--db`：SQLite 文件路径，默认 `./agent.db`
 - `--max-steps`：最大步数，必须大于 0
 - `--json`：输出机器可读 JSON
+- `--stream`：启用实时事件流输出；文本模式下增量打印 token/tool/step 事件，JSON 模式下输出 JSONL
 
 ### Task-Type 验证策略
 
@@ -88,6 +94,14 @@ go run ./cmd/agent run \
 - 计划摘要
 - 已记录步数
 
+启用 `--stream` 后，CLI 会立即消费运行时事件流：
+
+- `token_delta`：直接增量打印模型文本
+- `tool_start` / `tool_end`：打印工具生命周期
+- `step_complete`：打印步骤边界
+- `error`：打印到 stderr
+- `session_complete`：打印最终 session 状态
+
 ### JSON 输出
 
 启用 `--json` 后，会输出类似：
@@ -102,6 +116,25 @@ go run ./cmd/agent run \
   "steps": 3
 }
 ```
+
+### Streaming JSONL 输出
+
+当 `--stream --json` 同时启用时，`run` 和 `resume` 输出为 **JSON Lines**，每行一个 `StreamingEvent`：
+
+```json
+{"type":"token_delta","step_index":1,"payload":{"content":"hello"},"timestamp":"2026-04-28T09:00:00Z"}
+{"type":"tool_start","step_index":1,"payload":{"tool_name":"code_search","input":"{\"pattern\":\"RunStream\"}"},"timestamp":"2026-04-28T09:00:01Z"}
+{"type":"tool_end","step_index":1,"payload":{"tool_name":"code_search","output":"internal/runtime/runtime.go","error":""},"timestamp":"2026-04-28T09:00:01Z"}
+{"type":"step_complete","step_index":1,"payload":{"step_summary":"validated runtime stream path"},"timestamp":"2026-04-28T09:00:02Z"}
+{"type":"session_complete","payload":{"session_id":"session-1710000000000000000","status":"success"},"timestamp":"2026-04-28T09:00:02Z"}
+```
+
+说明：
+
+- token/tool 等中间 streaming 事件 **不会持久化到 SQLite**
+- 仅最终 `Session` / `Plan` / `Step` 状态会持久化
+- `resume --stream` 会基于已持久化状态继续执行，并仅 stream 剩余过程
+- `inspect` 对 streaming session 的输出格式与非 streaming session 完全一致
 
 ## `zheng-agent resume --session <id>`
 
@@ -119,6 +152,7 @@ go run ./cmd/agent resume --session session-1710000000000000000
 go run ./cmd/agent resume \
   --session session-1710000000000000000 \
   --db ./agent.db \
+  --stream \
   --max-steps 8
 ```
 
@@ -127,6 +161,7 @@ go run ./cmd/agent resume \
 - `--session`：必填，会话 ID
 - `--db`：SQLite 文件路径，默认 `./agent.db`
 - `--max-steps`：恢复后继续运行时允许的最大步数，必须大于 0
+- `--stream`：对恢复后的剩余执行过程启用实时流式输出
 
 `resume` 的文本输出会展示：
 
@@ -134,6 +169,8 @@ go run ./cmd/agent resume \
 - 当前状态
 - 计划摘要
 - 最近的步骤历史摘要
+
+如果恢复的 session 已经终止，`resume --stream` 不会重新播放旧的 token 事件，而是直接输出当前持久化状态。
 
 ## `zheng-agent inspect --session <id>`
 
@@ -165,6 +202,88 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 - 计划摘要
 - 步数统计
 - 最近步骤摘要
+
+对于 streaming session，`inspect` 仍然只展示持久化后的最终 plan/step/session 结果，不展示中间 token delta 事件。
+
+## 内置工具
+
+当前 CLI runtime 默认注册以下内置工具：
+
+- `read_file` / `write_file` / `edit_file` / `list_dir`
+- `glob`
+- `grep_search`
+- `code_search`：带语言过滤的代码搜索
+- `ask_user`：在 CLI 中向用户提问并等待输入
+- `web_fetch`：执行受约束的 HTTP/HTTPS 页面抓取
+- `exec_command`：执行 allowlisted 本地命令
+
+### `code_search`
+
+用于在工作区内搜索源码，支持语言过滤与不同输出模式。
+
+输入 schema：
+
+```json
+{
+  "pattern": "RunStream",
+  "language": "go",
+  "output_mode": "content",
+  "max_results": 20
+}
+```
+
+- `pattern`：必填，搜索模式
+- `language`：可选，语言过滤
+- `output_mode`：可选，`content` / `files_with_matches` / `count`
+- `max_results`：可选，默认 50
+
+### `ask_user`
+
+用于在 CLI 运行过程中请求人工输入。
+
+输入 schema：
+
+```json
+{
+  "question": "Which config file should I update?",
+  "options": ["README.md", "docs/USAGE.md", "both"]
+}
+```
+
+- `question`：必填，向用户展示的问题
+- `options`：可选，候选项列表
+
+### `web_fetch`
+
+用于抓取 HTTP/HTTPS 页面内容。
+
+输入 schema：
+
+```json
+{
+  "url": "https://example.com",
+  "max_length": 4000
+}
+```
+
+- `url`：必填，仅支持 `http` / `https`
+- `max_length`：可选，返回内容最大字符数，默认 `10000`
+
+### `web_fetch` 域名 allowlist
+
+`web_fetch` 受安全策略约束，支持按域名 allowlist 限制访问范围。
+
+- 当 `AllowedDomains` 为空时：允许任意 HTTP/HTTPS 域名
+- 当 `AllowedDomains` 非空时：仅允许精确匹配的 hostname
+- 不在 allowlist 内的域名会返回：`web_fetch domain "<host>" is not allowed`
+
+当前默认执行器会将 `AllowedDomains` 初始化为空列表；如果你在自定义 runtime 装配 `tools.SafetyPolicy`，可以设置：
+
+```go
+tools.SafetyPolicy{
+  AllowedDomains: []string{"example.com", "docs.example.com"},
+}
+```
 
 ## 环境变量配置
 

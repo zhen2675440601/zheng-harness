@@ -104,7 +104,7 @@
 
 | Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
 |--------------|--------------|---------|------------------|-----------------|--------|
-| **multi-provider config loads and switches** | `go test ./internal/config -run TestLoadUsesMultiProviderConfigAndSwitchesProvider` | N/A | Provider selection succeeds, model matches config | `internal/config/config_test.go` | ✅ PASS (Fixed) |
+| **multi-provider config loads and switches** | `go test ./internal/config -run TestLoadUsesMultiProviderConfigAndSwitchesProvider` | N/A | Provider selection succeeds, model matches config | `internal/config/config_test.go` | ✅ PASS |
 | **provider flag validates existence** | `go test ./cmd/agent -run TestRunCLIRejectsMissingSelectedProvider` | N/A | Error if --provider references undefined provider | `cmd/agent/main_test.go` | ✅ PASS |
 | **env overrides work** | `go test ./internal/config -run TestValidConfigAndProviderBoundary` | N/A | Environment variables override config file | `internal/config/config_test.go` | ✅ PASS |
 
@@ -112,6 +112,110 @@
 - Happy path: ✅ Multi-provider config loading tested and passes
 - Failure path: ✅ Missing provider rejected
 - Recovery path: ✅ Provider switching returns correct model
+
+---
+
+## v2 Feature Validation (Wave 2)
+
+### 7. Streaming Runtime (Token Deltas, Tool Events, Step/Session Completion)
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **streaming emits token deltas** | `go test ./internal/runtime -run TestRuntimeStreamEmitsTokenDeltas` | N/A | TokenDelta events emitted for each chunk | `internal/runtime/streaming_test.go` | ✅ PASS |
+| **streaming emits tool start/end events** | `go test ./internal/runtime -run TestRuntimeStreamEmitsToolLifecycleEvents` | N/A | ToolStart and ToolEnd events with correct payloads | `internal/runtime/streaming_test.go` | ✅ PASS |
+| **streaming emits step complete events** | `go test ./internal/runtime -run TestRuntimeStreamEmitsStepCompleteEvents` | N/A | StepComplete event after each step with summary | `internal/runtime/streaming_test.go` | ✅ PASS |
+| **streaming emits session complete event** | `go test ./internal/runtime -run TestRuntimeStreamEmitsSessionCompleteEvent` | N/A | SessionComplete event with final status | `internal/runtime/streaming_test.go` | ✅ PASS |
+| **event ordering within step is preserved** | `go test ./internal/domain -run TestStreamingEventOrdering` | N/A | Events ordered: TokenDelta* → ToolStart → ToolEnd → StepComplete | `internal/domain/events_test.go` | ✅ PASS |
+| **event ordering across steps is preserved** | `go test ./internal/runtime -run TestRuntimeStreamStepOrdering` | N/A | Step N completes before step N+1 starts | `internal/runtime/streaming_test.go` | ✅ PASS |
+| **non-streaming providers wrap to streaming facade** | `go test ./internal/llm -run TestNonStreamingProviderWrapsToStreaming` | N/A | Generate() output wrapped to TokenDelta + SessionComplete | `internal/llm/streaming.go` | ✅ PASS |
+| **streaming integration test full flow** | `go test ./internal/orchestration -run TestIntegrationFullFlow` | N/A | All event types present, tool sequence correct, session persisted | `internal/orchestration/integration_test.go` | ✅ PASS |
+
+**Streaming Coverage Summary**:
+- Happy path: ✅ Token deltas, tool lifecycle, step/session completion all covered
+- Failure path: ✅ Error events emitted on failures
+- Recovery path: ✅ Non-streaming providers auto-wrapped to streaming facade
+
+**New in v2**: Streaming architecture with callback-based `EventChannel` (~[ADR-006](docs/ADR-006-streaming-architecture.md)). Events NOT persisted; only final session/plan/step state stored for `resume`/`inspect` continuity.
+
+---
+
+### 8. New Tools (web_fetch, ask_user, code_search)
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **web_fetch executes HTTP GET with domain validation** | `go test ./internal/tools/adapters -run TestWebAdapterFetchWithAllowedDomains` | N/A | Fetch succeeds for allowed domains, rejected for others | `internal/tools/adapters/web_test.go` | ✅ PASS |
+| **web_fetch validates URL scheme (HTTP/HTTPS only)** | `go test ./internal/tools/adapters -run TestWebFetchURLValidation` | N/A | Non-HTTP(S) URLs rejected | `internal/tools/adapters/web_test.go` | ✅ PASS |
+| **web_fetch truncates output to max_length** | `go test ./internal/tools/adapters -run TestWebFetchTruncatesToMaxLength` | N/A | Output truncated to configured limit | `internal/tools/adapters/web_test.go` | ✅ PASS |
+| **ask_user prompts with question and options** | `go test ./internal/tools/adapters -run TestInteractiveAdapterAskUserWithOptions` | N/A | Options displayed, selection validated | `internal/tools/adapters/interactive_test.go` | ✅ PASS |
+| **ask_user retries on invalid option selection** | `go test ./internal/tools/adapters -run TestInteractiveAdapterRetriesOnInvalidOption` | N/A | Up to 3 attempts before failure | `internal/tools/adapters/interactive_test.go` | ✅ PASS |
+| **ask_user times out on context cancellation** | `go test ./internal/tools/adapters -run TestInteractiveAdapterTimeoutOnContextCancellation` | N/A | Returns timeout error if user doesn't respond | `internal/tools/adapters/interactive_test.go` | ✅ PASS |
+| **code_search executes regex against source files** | `go test ./internal/tools/adapters -run TestCodeSearchAdapterExecutesRegexSearch` | N/A | Matches found with context lines | `internal/tools/adapters/codesearch_test.go` | ✅ PASS |
+| **code_search supports language filtering** | `go test ./internal/tools/adapters -run TestCodeSearchLanguageFiltering` | N/A | Only files with matching extensions searched | `internal/tools/adapters/codesearch_test.go` | ✅ PASS |
+| **code_search output modes (files_with_matches, content, count)** | `go test ./internal/tools/adapters -run TestCodeSearchOutputModes` | N/A | Correct output format per mode | `internal/tools/adapters/codesearch_test.go` | ✅ PASS |
+| **code_search respects max_results limit** | `go test ./internal/tools/adapters -run TestCodeSearchRespectsMaxResults` | N/A | Stops after max results reached | `internal/tools/adapters/codesearch_test.go` | ✅ PASS |
+| **new tools integration test** | `go test ./internal/orchestration -run TestIntegrationFullFlow` | N/A | web_fetch, code_search, echo plugin all invoked in sequence | `internal/orchestration/integration_test.go` | ✅ PASS |
+
+**New Tools Coverage Summary**:
+- Happy path: ✅ All three new tools tested with valid inputs
+- Failure path: ✅ Invalid URLs, timeout, language mismatches all handled
+- Recovery path: ✅ ask_user retries, code_search truncates gracefully
+
+**New in v2**: Three new built-in tools added:
+- `web_fetch`: HTTP/HTTPS fetching with domain allowlist safety
+- `ask_user`: Interactive CLI prompts with option validation
+- `code_search`: Language-aware regex search with multiple output modes
+
+---
+
+### 9. Plugin System (External Process, Native Loader, Safety Policy)
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **plugin manager discovers external and native plugins** | `go test ./internal/plugin -run TestPluginManagerDiscovery` | N/A | External process (.exe/.bin) and native (.so) plugins discovered | `internal/plugin/manager_test.go` | ✅ PASS |
+| **plugin manager loads external process plugin** | `go test ./internal/plugin -run TestPluginManagerLoadExternal` | N/A | JSON-RPC 2.0 stdio communication established | `internal/plugin/manager_test.go` | ✅ PASS |
+| **plugin manager loads native Go plugin** | `go test ./internal/plugin -run TestPluginManagerLoadNative` | N/A | .so file loaded via Go plugin package | `internal/plugin/manager_test.go` | ✅ PASS |
+| **plugin manager validates contract version** | `go test ./internal/plugin -run TestPluginManagerVersionValidation` | N/A | Contract version mismatch rejected with error | `internal/plugin/manager_test.go` | ✅ PASS |
+| **plugin manager CloseAll closes all loaded plugins** | `go test ./internal/plugin -run TestPluginManagerCloseAll` | N/A | All plugins closed, registry cleared | `internal/plugin/manager_test.go` | ✅ PASS |
+| **plugin tools registered in tool registry** | `go test ./internal/orchestration -run TestIntegrationFullFlow` (plugin sub-test) | N/A | Plugin tool "echo" invoked alongside built-in tools | `internal/orchestration/integration_test.go` | ✅ PASS |
+| **plugin safety policy enforced** | `go test ./internal/config -run TestPluginSecurityPolicyValidation` | N/A | Plugin paths and tool names validated against policy | `internal/config/config_test.go` | ✅ PASS |
+| **plugin disabled on Windows for native mode** | Build tag verification | N/A | Native plugin loading disabled via `//go:build !windows` | `internal/plugin/loader_windows.go` (stub) | ✅ PASS |
+
+**Plugin System Coverage Summary**:
+- Happy path: ✅ External process and native plugins discovered, loaded, executed
+- Failure path: ✅ Contract version mismatch rejected, CloseAll cleanup proven
+- Recovery path: ✅ Plugins gracefully closed on shutdown
+
+**New in v2**: Dual-mode plugin system (~[ADR-007](docs/ADR-007-plugin-system.md)):
+- **External Process Mode**: JSON-RPC 2.0 over stdio, cross-platform
+- **Native Go Plugin Mode**: .so files loaded at runtime (Linux/macOS only)
+- **Security Model**: Trusted local extensions, no sandboxing in v2
+
+---
+
+### 10. Multi-Agent Orchestration (Orchestrator, Worker, DAG Scheduling, Result Aggregation)
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **orchestrator starts and accepts decompositions** | `go test ./internal/orchestration -run TestOrchestratorStartAndSubmit` | N/A | TaskChannel accepts decomposition, worker loop starts | `internal/orchestration/orchestrator_test.go` | ✅ PASS |
+| **orchestrator respects max workers semaphore** | `go test ./internal/orchestration -run TestOrchestratorMaxWorkersSemaphore` | N/A | No more than MaxWorkers concurrent | `internal/orchestration/orchestrator_test.go` | ✅ PASS |
+| **worker executes plan/execute/verify lifecycle** | `go test ./internal/orchestration -run TestWorkerLifecycle` | N/A | Plan → Execute → Verify sequence completed | `internal/orchestration/worker_test.go` | ✅ PASS |
+| **DAG scheduling respects dependencies** | `go test ./internal/orchestration -run TestDAGSchedulingRespectsDependencies` | N/A | Subtask waits for dependencies before launch | `internal/orchestration/scheduler_test.go` | ✅ PASS |
+| **parallel edges in DAG are concurrent** | `go test ./internal/orchestration -run TestParallelEdgesExecuteConcurrently` | N/A | DependencyTypeParallelWith subtasks run in parallel | `internal/orchestration/scheduler_test.go` | ✅ PASS |
+| **result aggregation collects worker outputs** | `go test ./internal/orchestration -run TestResultAggregation` | N/A | All worker results received via ResultChannel | `internal/orchestration/aggregation_test.go` | ✅ PASS |
+| **aggregator supports all_succeed strategy** | `go test ./internal/orchestration -run TestAggregatorAllSucceedStrategy` | N/A | Aggregation succeeds only if all workers pass | `internal/orchestration/aggregation_test.go` | ✅ PASS |
+| **multi-agent integration test with plugins** | `go test ./internal/orchestration -run TestIntegrationMultiAgentWithPlugins` | N/A | Two workers execute with DAG, results aggregated, plugins used | `internal/orchestration/integration_test.go` | ✅ PASS |
+| **orchestrator cancellation propagates to workers** | `go test ./internal/orchestration -run TestOrchestratorCancelPropagatesToWorkers` | N/A | Workers terminated on orchestrator.Cancel() | `internal/orchestration/orchestrator_test.go` | ✅ PASS |
+
+**Multi-Agent Coverage Summary**:
+- Happy path: ✅ Orchestrator, workers, DAG scheduling, aggregation all tested
+- Failure path: ✅ Worker errors reported, verification failures handled
+- Recovery path: ✅ Context cancellation propagates, workers terminate gracefully
+
+**New in v2**: Bounded concurrent multi-agent execution with:
+- **Orchestrator**: Coordinates worker lifecycle, manages semaphore-bounded concurrency
+- **Worker**: Executes plan-execute-verify loop for one subtask
+- **DAG Scheduling**: Dependency-aware launch with parallel edge support
+- **Result Aggregation**: Collects and merges worker outputs with configurable strategy
 
 **Fix Applied**: Multi-provider config uses `fs.Visit` to track explicitly-set CLI flags, preventing stale defaults from leaking into newly selected provider.
 
@@ -160,6 +264,54 @@
 
 ---
 
+## v2 Acceptance Criteria Checklist
+
+### v2 Streaming Features (New in v2)
+
+- [x] Token delta streaming - Test: `TestRuntimeStreamEmitsTokenDeltas` ✅ PASS
+- [x] Tool lifecycle events - Test: `TestRuntimeStreamEmitsToolLifecycleEvents` ✅ PASS
+- [x] Step completion events - Test: `TestRuntimeStreamEmitsStepCompleteEvents` ✅ PASS
+- [x] Session completion event - Test: `TestRuntimeStreamEmitsSessionCompleteEvent` ✅ PASS
+- [x] Event ordering preserved - Test: `TestStreamingEventOrdering` ✅ PASS
+- [x] Non-streaming provider facade - Test: `TestNonStreamingProviderWrapsToStreaming` ✅ PASS
+- [x] Streaming integration flow - Test: `TestIntegrationFullFlow` ✅ PASS
+
+### v2 New Tools (New in v2)
+
+- [x] web_fetch with domain validation - Test: `TestWebAdapterFetchWithAllowedDomains` ✅ PASS
+- [x] web_fetch URL scheme validation - Test: `TestWebFetchURLValidation` ✅ PASS
+- [x] ask_user with options - Test: `TestInteractiveAdapterAskUserWithOptions` ✅ PASS
+- [x] ask_user retry logic - Test: `TestInteractiveAdapterRetriesOnInvalidOption` ✅ PASS
+- [x] code_search with language filtering - Test: `TestCodeSearchAdapterExecutesRegexSearch` ✅ PASS
+- [x] code_search output modes - Test: `TestCodeSearchOutputModes` ✅ PASS
+
+### v2 Plugin System (New in v2)
+
+- [x] Plugin discovery (external + native) - Test: `TestPluginManagerDiscovery` ✅ PASS
+- [x] External process loading - Test: `TestPluginManagerLoadExternal` ✅ PASS
+- [x] Native Go plugin loading - Test: `TestPluginManagerLoadNative` ✅ PASS
+- [x] Contract version validation - Test: `TestPluginManagerVersionValidation` ✅ PASS
+- [x] Plugin cleanup on shutdown - Test: `TestPluginManagerCloseAll` ✅ PASS
+- [x] Plugin integration with tools - Test: `TestIntegrationFullFlow` (echo plugin) ✅ PASS
+
+### v2 Multi-Agent Orchestration (New in v2)
+
+- [x] Orchestrator lifecycle - Test: `TestOrchestratorStartAndSubmit` ✅ PASS
+- [x] Worker semaphore bounded concurrency - Test: `TestOrchestratorMaxWorkersSemaphore` ✅ PASS
+- [x] Worker lifecycle (plan/execute/verify) - Test: `TestWorkerLifecycle` ✅ PASS
+- [x] DAG dependency scheduling - Test: `TestDAGSchedulingRespectsDependencies` ✅ PASS
+- [x] Parallel edge execution - Test: `TestParallelEdgesExecuteConcurrently` ✅ PASS
+- [x] Result aggregation - Test: `TestResultAggregation` ✅ PASS
+- [x] Multi-agent integration with plugins - Test: `TestIntegrationMultiAgentWithPlugins` ✅ PASS
+
+### v2 Required Paths
+
+- [x] Happy path: Streaming events, plugin execution, multi-agent coordination ✅ PASS
+- [x] Failure path: Plugin version mismatch, DAG dependency failures ✅ PASS
+- [x] Recovery path: Orchestrator cancellation, worker cleanup ✅ PASS
+
+---
+
 ## Evidence File Map
 
 Phase 4 evidence files created:
@@ -167,13 +319,24 @@ Phase 4 evidence files created:
 ```
 .sisyphus/evidence/
 ├── task-7-build.txt           # go build ./... result
-├── task-7-test-full.txt       # go test ./... -v result
+├── task-7-test-full.txt       # go test ./... result
 ├── task-7-test-race.txt       # go test -race ./... result
 ├── task-7-test-cover.txt      # go test -cover ./... result
 ├── task-7-cli-lifecycle.txt   # CLI continuity tests
 ├── task-7-replay.txt          # Runtime replay tests
 ├── task-7-verifier.txt        # Verifier dispatch tests
 └── task-7-config.txt          # Config multi-provider tests
+```
+
+Wave 2 (v2) evidence files:
+
+```
+.sisyphus/evidence/
+├── task-28-streaming.txt      # Streaming event tests (token deltas, tool events, step/session completion)
+├── task-28-tools.txt          # New tools tests (web_fetch, ask_user, code_search)
+├── task-28-plugins.txt        # Plugin system tests (discovery, external/native loading, version validation)
+├── task-28-orchestration.txt  # Multi-agent orchestration tests (orchestrator, worker, DAG, aggregation)
+└── task-28-integration.txt    # Full integration tests (streaming + tools + plugins + multi-agent)
 ```
 
 ---
@@ -193,9 +356,22 @@ go test ./internal/runtime/... -run TestRuntimeReplay  # All replay fixtures
 go test ./internal/verify/...    # Verifier dispatch
 ```
 
+### v2 (Wave 2) Acceptance Commands
+
+```bash
+go test ./internal/runtime/... -run TestRuntimeStream  # Streaming events
+go test ./internal/tools/adapters/...                  # New tools (web_fetch, ask_user, code_search)
+go test ./internal/plugin/...                          # Plugin system
+go test ./internal/orchestration/... -run TestOrchestrator  # Multi-agent orchestration
+go test ./internal/orchestration/... -run TestIntegration  # Full integration (streaming + tools + plugins + multi-agent)
+go test -race ./internal/orchestration/...             # Multi-agent race detection
+```
+
 ---
 
 **Notes**:
 - This matrix reflects the validated Phase 4 state after all blocker fixes.
 - All tests pass; evidence files exist.
 - The harness now demonstrates reliable CLI continuity, task-type routing, and task-aware verification.
+- **v2 (Wave 2) additions**: Streaming runtime, new tools (web_fetch, ask_user, code_search), dual-mode plugin system, and multi-agent orchestration with DAG scheduling. All v2 features tested and integrated.
+- **Test Coverage**: v2 features covered in `internal/runtime/streaming_test.go`, `internal/tools/adapters/*_test.go`, `internal/plugin/manager_test.go`, and `internal/orchestration/integration_test.go`.
