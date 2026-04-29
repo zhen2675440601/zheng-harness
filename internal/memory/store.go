@@ -11,18 +11,18 @@ import (
 	"zheng-harness/internal/store"
 )
 
-// Store persists constrained memory entries with validation rules.
+// Store 按校验规则持久化受约束的记忆条目。
 type Store struct {
 	db         *sql.DB
 	projectKey string
 }
 
-// NewStore constructs a memory store backed by SQLite.
+// NewStore 构造一个由 SQLite 支撑的记忆存储。
 func NewStore(database *store.Database, projectKey string) *Store {
 	return &Store{db: database.SQL(), projectKey: projectKey}
 }
 
-// Remember implements domain.MemoryStore while preventing autonomous writes.
+// Remember 实现 domain.MemoryStore，同时阻止自主写入。
 func (s *Store) Remember(ctx context.Context, sessionID string, observation domain.Observation) error {
 	text := strings.TrimSpace(observation.Summary)
 	if !strings.HasPrefix(strings.ToLower(text), "remember:") {
@@ -47,7 +47,7 @@ func (s *Store) Remember(ctx context.Context, sessionID string, observation doma
 	return s.Write(ctx, entry)
 }
 
-// Write persists an explicit memory entry after policy validation.
+// Write 在通过策略校验后持久化显式记忆条目。
 func (s *Store) Write(ctx context.Context, entry Entry) error {
 	if err := ValidateEntry(entry); err != nil {
 		return err
@@ -71,7 +71,7 @@ INSERT INTO memory_entries (
 	return err
 }
 
-// LoadRelevant returns inspectable memory entries visible to a session.
+// LoadRelevant 返回对某个会话可见且可检查的相关记忆条目。
 func (s *Store) LoadRelevant(ctx context.Context, sessionID string) ([]Entry, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, session_id, project_key, scope, memory_type, content, source, confidence, created_at, last_used_at
@@ -102,8 +102,16 @@ ORDER BY last_used_at DESC
 		); err != nil {
 			return nil, err
 		}
-		entry.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-		entry.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+		parsedCreatedAt, err := time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse created_at for memory entry %q: %w", entry.ID, err)
+		}
+		parsedUpdatedAt, err := time.Parse(time.RFC3339Nano, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse last_used_at for memory entry %q: %w", entry.ID, err)
+		}
+		entry.CreatedAt = parsedCreatedAt
+		entry.UpdatedAt = parsedUpdatedAt
 		entries = append(entries, entry)
 	}
 	return entries, rows.Err()

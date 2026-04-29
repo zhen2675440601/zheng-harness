@@ -1,5 +1,4 @@
-// Package memory contains constrained persistent memory policies.
+// Package memory 包含受约束的持久化记忆策略。
 //
-// Ownership: this package owns memory-specific application/infrastructure
-// behavior around durable facts and summaries.
+// 归属：该包负责围绕持久事实与摘要的记忆专用应用/基础设施行为。
 package memory
