@@ -184,7 +184,50 @@ make test
 
 ---
 
-## 五、违规处理
+## 五、Git Hooks 配置
+
+项目配置了 commit-msg hook 自动校验提交信息格式。
+
+### 5.1 启用方式
+
+克隆仓库后，运行以下命令启用 hook：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+### 5.2 校验规则
+
+hook 会自动检查以下内容：
+
+- ✅ 提交信息必须包含中文
+- ✅ 格式必须为 `<类型>(<范围>): <中文标题>`
+- ✅ 标题长度不超过 50 字符
+- ✅ 标题结尾不能使用句号
+
+### 5.3 可用类型
+
+`feat`, `fix`, `refactor`, `perf`, `test`, `docs`, `chore`, `style`, `ci`
+
+### 5.4 正确示例
+
+```
+feat(agent): 添加会话恢复功能
+fix(runtime): 修复任务超时问题
+docs: 更新 PROGRESS 添加 v3 规划
+```
+
+### 5.5 错误示例
+
+```
+feat: add English commit    # ❌ 必须使用中文
+feat: 添加功能。             # ❌ 结尾不能有句号
+Fix the bug                 # ❌ 必须使用中文
+```
+
+---
+
+## 六、违规处理
 
 - 未使用中文的提交信息将被退回
 - 缺少必要注释的代码将被要求补充
