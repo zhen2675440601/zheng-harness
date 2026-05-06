@@ -101,14 +101,8 @@ func (p *AnthropicProvider) Model() string {
 }
 
 func (p *AnthropicProvider) Generate(ctx context.Context, request Request) (Response, error) {
-	if p.model == "" {
-		return Response{}, errors.New("anthropic model must not be empty")
-	}
-	if p.baseURL == "" {
-		return Response{}, errors.New("anthropic base URL must not be empty")
-	}
-	if p.apiKey == "" {
-		return Response{}, errors.New("anthropic API key must not be empty")
+	if err := p.validate(); err != nil {
+		return Response{}, err
 	}
 
 	payload := anthropicGenerateRequest{
@@ -129,42 +123,40 @@ func (p *AnthropicProvider) Generate(ctx context.Context, request Request) (Resp
 	}
 
 	endpoint := p.baseURL + "/messages"
-	var lastErr error
-
-	for attempt := 0; attempt <= p.maxRetries; attempt++ {
-		apiResponse, statusCode, err := p.send(ctx, endpoint, body)
+	for attempt := 0; ; attempt++ {
+		apiResponse, statusCode, err := p.send(ctx, endpoint, body, false)
 		if err != nil {
-			return Response{}, err
+			var transportErr *anthropicTransportError
+			if !errors.As(err, &transportErr) {
+				return Response{}, err
+			}
+			if attempt < p.maxRetries {
+				if waitErr := p.waitBackoff(ctx, attempt); waitErr != nil {
+					return Response{}, fmt.Errorf("anthropic transport failed: %w", waitErr)
+				}
+				continue
+			}
+			return Response{}, fmt.Errorf("anthropic transport failed: %w", err)
 		}
 
 		switch {
 		case statusCode == http.StatusUnauthorized:
-			return Response{}, fmt.Errorf("anthropic authentication failed (status 401): %s", anthropicErrorMessage(apiResponse))
+			return Response{}, fmt.Errorf("anthropic authentication failed: %s", anthropicErrorMessage(apiResponse))
 		case statusCode == http.StatusTooManyRequests || statusCode == 529 || statusCode >= http.StatusInternalServerError:
-			if attempt == p.maxRetries {
-				if statusCode == 529 {
-					return Response{}, fmt.Errorf("anthropic service overloaded, retrying: status %d: %s", statusCode, anthropicErrorMessage(apiResponse))
+			if attempt < p.maxRetries {
+				if err := p.waitBackoff(ctx, attempt); err != nil {
+					return Response{}, fmt.Errorf("anthropic transport failed: %w", err)
 				}
-				return Response{}, fmt.Errorf("anthropic request failed after retries with status %d: %s", statusCode, anthropicErrorMessage(apiResponse))
+				continue
 			}
-
-			if statusCode == 529 {
-				lastErr = fmt.Errorf("anthropic service overloaded, retrying")
-			} else {
-				lastErr = fmt.Errorf("anthropic request failed with status %d, retrying: %s", statusCode, anthropicErrorMessage(apiResponse))
-			}
-
-			if err := p.waitBackoff(ctx, attempt); err != nil {
-				return Response{}, err
-			}
-			continue
+			return Response{}, fmt.Errorf("anthropic request failed with status %d: %s", statusCode, anthropicErrorMessage(apiResponse))
 		case statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices:
 			return Response{}, fmt.Errorf("anthropic request failed with status %d: %s", statusCode, anthropicErrorMessage(apiResponse))
 		}
 
 		output := anthropicOutputText(apiResponse.Content)
 		if output == "" {
-			return Response{}, errors.New("anthropic response contained no text output")
+			return Response{}, errors.New("anthropic malformed response: content must contain text")
 		}
 
 		model := apiResponse.Model
@@ -178,23 +170,11 @@ func (p *AnthropicProvider) Generate(ctx context.Context, request Request) (Resp
 			StopReason: apiResponse.StopReason,
 		}, nil
 	}
-
-	if lastErr != nil {
-		return Response{}, lastErr
-	}
-
-	return Response{}, errors.New("anthropic request failed")
 }
 
 func (p *AnthropicProvider) Stream(ctx context.Context, request Request, emit func(domain.StreamingEvent) error) error {
-	if p.model == "" {
-		return errors.New("anthropic model must not be empty")
-	}
-	if p.baseURL == "" {
-		return errors.New("anthropic base URL must not be empty")
-	}
-	if p.apiKey == "" {
-		return errors.New("anthropic API key must not be empty")
+	if err := p.validate(); err != nil {
+		return err
 	}
 
 	payload := anthropicGenerateRequest{
@@ -211,9 +191,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, request Request, emit fu
 	}
 
 	endpoint := p.baseURL + "/messages"
-	var lastErr error
-
-	for attempt := 0; attempt <= p.maxRetries; attempt++ {
+	for attempt := 0; ; attempt++ {
 		err := p.sendStream(ctx, endpoint, body, emit)
 		if err == nil {
 			return nil
@@ -221,64 +199,66 @@ func (p *AnthropicProvider) Stream(ctx context.Context, request Request, emit fu
 
 		var retryErr *anthropicRetryableStreamError
 		if !errors.As(err, &retryErr) {
+			var transportErr *anthropicTransportError
+			if errors.As(err, &transportErr) {
+				return fmt.Errorf("anthropic transport failed: %w", transportErr)
+			}
 			return err
 		}
 
 		statusCode := retryErr.statusCode
-		if attempt == p.maxRetries {
-			if statusCode == 529 {
-				return fmt.Errorf("anthropic service overloaded, retrying: status %d: %s", statusCode, retryErr.message)
+		if attempt < p.maxRetries {
+			if err := p.waitBackoff(ctx, attempt); err != nil {
+				return fmt.Errorf("anthropic transport failed: %w", err)
 			}
-			return fmt.Errorf("anthropic request failed after retries with status %d: %s", statusCode, retryErr.message)
+			continue
 		}
-
-		if statusCode == 529 {
-			lastErr = fmt.Errorf("anthropic service overloaded, retrying")
-		} else {
-			lastErr = fmt.Errorf("anthropic request failed with status %d, retrying: %s", statusCode, retryErr.message)
-		}
-
-		if err := p.waitBackoff(ctx, attempt); err != nil {
-			return err
-		}
+		return fmt.Errorf("anthropic stream request failed with status %d: %s", statusCode, retryErr.message)
 	}
-
-	if lastErr != nil {
-		return lastErr
-	}
-
-	return errors.New("anthropic request failed")
 }
 
-func (p *AnthropicProvider) send(ctx context.Context, endpoint string, body []byte) (anthropicGenerateResponse, int, error) {
+func (p *AnthropicProvider) validate() error {
+	if p.model == "" {
+		return errors.New("anthropic model must not be empty")
+	}
+	if p.baseURL == "" {
+		return errors.New("anthropic base URL must not be empty")
+	}
+	if p.apiKey == "" {
+		return errors.New("anthropic API key must not be empty")
+	}
+	return nil
+}
+
+func (p *AnthropicProvider) send(ctx context.Context, endpoint string, body []byte, stream bool) (anthropicGenerateResponse, int, error) {
+	httpResponse, err := p.sendRequest(ctx, endpoint, body, stream)
+	if err != nil {
+		return anthropicGenerateResponse{}, 0, err
+	}
+	defer httpResponse.Body.Close()
+	return anthropicReadResponse(httpResponse, stream)
+}
+
+func (p *AnthropicProvider) sendRequest(ctx context.Context, endpoint string, body []byte, stream bool) (*http.Response, error) {
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return anthropicGenerateResponse{}, 0, fmt.Errorf("create anthropic request: %w", err)
+		return nil, fmt.Errorf("create anthropic request: %w", err)
 	}
 
 	httpRequest.Header.Set("Content-Type", "application/json")
+	if stream {
+		httpRequest.Header.Set("Accept", "text/event-stream")
+	} else {
+		httpRequest.Header.Set("Accept", "application/json")
+	}
 	httpRequest.Header.Set("x-api-key", p.apiKey)
 	httpRequest.Header.Set("anthropic-version", p.apiVersion)
 
 	httpResponse, err := p.httpClient.Do(httpRequest)
 	if err != nil {
-		return anthropicGenerateResponse{}, 0, fmt.Errorf("send anthropic request: %w", err)
+		return nil, &anthropicTransportError{err: err}
 	}
-	defer httpResponse.Body.Close()
-
-	responseBody, err := io.ReadAll(httpResponse.Body)
-	if err != nil {
-		return anthropicGenerateResponse{}, httpResponse.StatusCode, fmt.Errorf("read anthropic response: %w", err)
-	}
-
-	var apiResponse anthropicGenerateResponse
-	if len(responseBody) > 0 {
-		if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
-			return anthropicGenerateResponse{}, httpResponse.StatusCode, fmt.Errorf("decode anthropic response: %w", err)
-		}
-	}
-
-	return apiResponse, httpResponse.StatusCode, nil
+	return httpResponse, nil
 }
 
 func (p *AnthropicProvider) waitBackoff(ctx context.Context, attempt int) error {
@@ -301,49 +281,32 @@ func (p *AnthropicProvider) waitBackoff(ctx context.Context, attempt int) error 
 }
 
 func (p *AnthropicProvider) sendStream(ctx context.Context, endpoint string, body []byte, emit func(domain.StreamingEvent) error) error {
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	httpResponse, err := p.sendRequest(ctx, endpoint, body, true)
 	if err != nil {
-		return fmt.Errorf("create anthropic stream request: %w", err)
-	}
-
-	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Accept", "text/event-stream")
-	httpRequest.Header.Set("x-api-key", p.apiKey)
-	httpRequest.Header.Set("anthropic-version", p.apiVersion)
-
-	httpResponse, err := p.httpClient.Do(httpRequest)
-	if err != nil {
-		return fmt.Errorf("send anthropic stream request: %w", err)
+		return err
 	}
 	defer httpResponse.Body.Close()
 
 	if httpResponse.StatusCode == http.StatusUnauthorized || httpResponse.StatusCode == http.StatusTooManyRequests || httpResponse.StatusCode == 529 || httpResponse.StatusCode >= http.StatusInternalServerError || httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		responseBody, err := io.ReadAll(httpResponse.Body)
+		apiResponse, _, err := anthropicReadResponse(httpResponse, true)
 		if err != nil {
-			return fmt.Errorf("read anthropic stream response: %w", err)
-		}
-
-		var apiResponse anthropicGenerateResponse
-		if len(responseBody) > 0 {
-			if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
-				return fmt.Errorf("decode anthropic stream response: %w", err)
-			}
+			return err
 		}
 
 		switch {
 		case httpResponse.StatusCode == http.StatusUnauthorized:
-			return fmt.Errorf("anthropic authentication failed (status 401): %s", anthropicErrorMessage(apiResponse))
+			return fmt.Errorf("anthropic authentication failed: %s", anthropicErrorMessage(apiResponse))
 		case httpResponse.StatusCode == http.StatusTooManyRequests || httpResponse.StatusCode == 529 || httpResponse.StatusCode >= http.StatusInternalServerError:
 			return &anthropicRetryableStreamError{statusCode: httpResponse.StatusCode, message: anthropicErrorMessage(apiResponse)}
 		default:
-			return fmt.Errorf("anthropic request failed with status %d: %s", httpResponse.StatusCode, anthropicErrorMessage(apiResponse))
+			return fmt.Errorf("anthropic stream request failed with status %d: %s", httpResponse.StatusCode, anthropicErrorMessage(apiResponse))
 		}
 	}
 
 	if err := ParseSSE(ctx, httpResponse.Body, func(chunk string) error {
 		var event anthropicStreamEvent
 		if err := json.Unmarshal([]byte(chunk), &event); err != nil {
-			return fmt.Errorf("decode anthropic stream chunk: %w", err)
+			return fmt.Errorf("anthropic malformed stream response: %w", err)
 		}
 
 		if event.Error != nil {
@@ -370,13 +333,47 @@ func (p *AnthropicProvider) sendStream(ctx context.Context, endpoint string, bod
 	return emit(*completeEvent)
 }
 
+func anthropicReadResponse(httpResponse *http.Response, stream bool) (anthropicGenerateResponse, int, error) {
+	responseBody, err := io.ReadAll(httpResponse.Body)
+	if err != nil {
+		if stream {
+			return anthropicGenerateResponse{}, httpResponse.StatusCode, fmt.Errorf("read anthropic stream response: %w", err)
+		}
+		return anthropicGenerateResponse{}, httpResponse.StatusCode, fmt.Errorf("read anthropic response: %w", err)
+	}
+
+	var apiResponse anthropicGenerateResponse
+	if len(responseBody) > 0 {
+		if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
+			if stream {
+				return anthropicGenerateResponse{}, httpResponse.StatusCode, fmt.Errorf("anthropic malformed stream response: %w", err)
+			}
+			return anthropicGenerateResponse{}, httpResponse.StatusCode, fmt.Errorf("anthropic malformed response: %w", err)
+		}
+	}
+
+	return apiResponse, httpResponse.StatusCode, nil
+}
+
 type anthropicRetryableStreamError struct {
 	statusCode int
 	message    string
 }
 
+type anthropicTransportError struct {
+	err error
+}
+
 func (e *anthropicRetryableStreamError) Error() string {
 	return fmt.Sprintf("anthropic stream retryable status %d: %s", e.statusCode, e.message)
+}
+
+func (e *anthropicTransportError) Error() string {
+	return e.err.Error()
+}
+
+func (e *anthropicTransportError) Unwrap() error {
+	return e.err
 }
 
 func anthropicErrorMessage(response anthropicGenerateResponse) string {
@@ -394,11 +391,19 @@ func anthropicErrorMessage(response anthropicGenerateResponse) string {
 }
 
 func anthropicOutputText(content []anthropicContent) string {
-	if len(content) == 0 {
-		return ""
+	parts := make([]string, 0, len(content))
+	for _, item := range content {
+		if item.Type != "text" {
+			continue
+		}
+
+		text := strings.TrimSpace(item.Text)
+		if text == "" {
+			continue
+		}
+
+		parts = append(parts, text)
 	}
-	if content[0].Type != "text" {
-		return ""
-	}
-	return strings.TrimSpace(content[0].Text)
+
+	return strings.Join(parts, "\n")
 }

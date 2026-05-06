@@ -109,62 +109,42 @@ func (p *OpenAIProvider) Generate(ctx context.Context, request Request) (Respons
 	endpoint := p.baseURL + "/chat/completions"
 
 	for attempt := 0; ; attempt++ {
-		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			return Response{}, fmt.Errorf("create openai request: %w", err)
-		}
-
-		httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
-		httpRequest.Header.Set("Content-Type", "application/json")
-		httpRequest.Header.Set("Accept", "application/json")
-
-		httpResponse, err := p.httpClient.Do(httpRequest)
+		apiResponse, statusCode, err := p.send(ctx, endpoint, body, false)
 		if err != nil {
 			if attempt < p.maxRetries {
 				if waitErr := openAIBackoffWait(ctx, attempt); waitErr != nil {
-					return Response{}, fmt.Errorf("send openai request: %w", waitErr)
+					return Response{}, fmt.Errorf("openai transport failed: %w", waitErr)
 				}
 				continue
 			}
-			return Response{}, fmt.Errorf("send openai request: %w", err)
+			return Response{}, fmt.Errorf("openai transport failed: %w", err)
 		}
 
-		responseBody, readErr := io.ReadAll(httpResponse.Body)
-		httpResponse.Body.Close()
-		if readErr != nil {
-			return Response{}, fmt.Errorf("read openai response: %w", readErr)
+		if statusCode == http.StatusUnauthorized {
+			return Response{}, fmt.Errorf("openai authentication failed: %s", openAIErrorMessage(apiResponse))
 		}
 
-		var apiResponse openAIChatCompletionResponse
-		if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
-			return Response{}, fmt.Errorf("decode openai response: %w", err)
-		}
-
-		if httpResponse.StatusCode == http.StatusUnauthorized {
-			return Response{}, errors.New("openai authentication failed: check API key")
-		}
-
-		if httpResponse.StatusCode == http.StatusTooManyRequests || httpResponse.StatusCode >= http.StatusInternalServerError {
+		if statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError {
 			if attempt < p.maxRetries {
 				if waitErr := openAIBackoffWait(ctx, attempt); waitErr != nil {
-					return Response{}, fmt.Errorf("retry openai request: %w", waitErr)
+					return Response{}, fmt.Errorf("openai transport failed: %w", waitErr)
 				}
 				continue
 			}
-			return Response{}, fmt.Errorf("openai request failed with status %d: %s", httpResponse.StatusCode, openAIErrorMessage(apiResponse))
+			return Response{}, fmt.Errorf("openai request failed with status %d: %s", statusCode, openAIErrorMessage(apiResponse))
 		}
 
-		if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-			return Response{}, fmt.Errorf("openai request failed with status %d: %s", httpResponse.StatusCode, openAIErrorMessage(apiResponse))
+		if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+			return Response{}, fmt.Errorf("openai request failed with status %d: %s", statusCode, openAIErrorMessage(apiResponse))
 		}
 
 		if len(apiResponse.Choices) == 0 {
-			return Response{}, errors.New("openai response contained no choices")
+			return Response{}, errors.New("openai malformed response: choices must not be empty")
 		}
 
 		output := strings.TrimSpace(apiResponse.Choices[0].Message.Content)
 		if output == "" {
-			return Response{}, errors.New("openai response contained empty message content")
+			return Response{}, errors.New("openai malformed response: message content must not be empty")
 		}
 
 		model := apiResponse.Model
@@ -208,24 +188,15 @@ func (p *OpenAIProvider) Stream(ctx context.Context, request Request, emit func(
 	endpoint := p.baseURL + "/chat/completions"
 
 	for attempt := 0; ; attempt++ {
-		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("create openai stream request: %w", err)
-		}
-
-		httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
-		httpRequest.Header.Set("Content-Type", "application/json")
-		httpRequest.Header.Set("Accept", "text/event-stream")
-
-		httpResponse, err := p.httpClient.Do(httpRequest)
+		httpResponse, err := p.sendStreamRequest(ctx, endpoint, body)
 		if err != nil {
 			if attempt < p.maxRetries {
 				if waitErr := openAIBackoffWait(ctx, attempt); waitErr != nil {
-					return fmt.Errorf("send openai stream request: %w", waitErr)
+					return fmt.Errorf("openai transport failed: %w", waitErr)
 				}
 				continue
 			}
-			return fmt.Errorf("send openai stream request: %w", err)
+			return fmt.Errorf("openai transport failed: %w", err)
 		}
 
 		streamErr := p.handleStreamResponse(ctx, httpResponse, emit)
@@ -237,7 +208,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, request Request, emit func(
 		if retryable, statusCode, message := openAIStreamRetryDecision(streamErr); retryable {
 			if attempt < p.maxRetries {
 				if waitErr := openAIBackoffWait(ctx, attempt); waitErr != nil {
-					return fmt.Errorf("retry openai stream request: %w", waitErr)
+					return fmt.Errorf("openai transport failed: %w", waitErr)
 				}
 				continue
 			}
@@ -248,23 +219,46 @@ func (p *OpenAIProvider) Stream(ctx context.Context, request Request, emit func(
 	}
 }
 
+func (p *OpenAIProvider) send(ctx context.Context, endpoint string, body []byte, stream bool) (openAIChatCompletionResponse, int, error) {
+	httpResponse, err := p.sendRequest(ctx, endpoint, body, stream)
+	if err != nil {
+		return openAIChatCompletionResponse{}, 0, err
+	}
+	defer httpResponse.Body.Close()
+	return openAIReadResponse(httpResponse, stream)
+}
+
+func (p *OpenAIProvider) sendStreamRequest(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {
+	return p.sendRequest(ctx, endpoint, body, true)
+}
+
+func (p *OpenAIProvider) sendRequest(ctx context.Context, endpoint string, body []byte, stream bool) (*http.Response, error) {
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create openai request: %w", err)
+	}
+
+	httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	if stream {
+		httpRequest.Header.Set("Accept", "text/event-stream")
+	} else {
+		httpRequest.Header.Set("Accept", "application/json")
+	}
+
+	return p.httpClient.Do(httpRequest)
+}
+
 func (p *OpenAIProvider) handleStreamResponse(ctx context.Context, httpResponse *http.Response, emit func(domain.StreamingEvent) error) error {
 	if httpResponse.StatusCode == http.StatusUnauthorized || httpResponse.StatusCode == http.StatusTooManyRequests || httpResponse.StatusCode >= http.StatusInternalServerError || httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		responseBody, readErr := io.ReadAll(httpResponse.Body)
-		if readErr != nil {
-			return fmt.Errorf("read openai stream response: %w", readErr)
-		}
-
-		var apiResponse openAIChatCompletionResponse
-		if len(responseBody) > 0 {
-			if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
-				return fmt.Errorf("decode openai stream response: %w", err)
-			}
+		apiResponse, _, err := openAIReadResponse(httpResponse, true)
+		if err != nil {
+			return err
 		}
 
 		switch {
 		case httpResponse.StatusCode == http.StatusUnauthorized:
-			return fmt.Errorf("openai authentication failed: check API key")
+			return fmt.Errorf("openai authentication failed: %s", openAIErrorMessage(apiResponse))
 		case httpResponse.StatusCode == http.StatusTooManyRequests || httpResponse.StatusCode >= http.StatusInternalServerError:
 			return &openAIStreamHTTPError{statusCode: httpResponse.StatusCode, message: openAIErrorMessage(apiResponse)}
 		default:
@@ -275,7 +269,7 @@ func (p *OpenAIProvider) handleStreamResponse(ctx context.Context, httpResponse 
 	parserErr := ParseSSE(ctx, httpResponse.Body, func(chunk string) error {
 		var apiResponse openAIChatCompletionResponse
 		if err := json.Unmarshal([]byte(chunk), &apiResponse); err != nil {
-			return fmt.Errorf("decode openai stream chunk: %w", err)
+			return fmt.Errorf("openai malformed stream response: %w", err)
 		}
 
 		for _, choice := range apiResponse.Choices {
@@ -307,6 +301,28 @@ func (p *OpenAIProvider) handleStreamResponse(ctx context.Context, httpResponse 
 	}
 
 	return nil
+}
+
+func openAIReadResponse(httpResponse *http.Response, stream bool) (openAIChatCompletionResponse, int, error) {
+	responseBody, readErr := io.ReadAll(httpResponse.Body)
+	if readErr != nil {
+		if stream {
+			return openAIChatCompletionResponse{}, httpResponse.StatusCode, fmt.Errorf("read openai stream response: %w", readErr)
+		}
+		return openAIChatCompletionResponse{}, httpResponse.StatusCode, fmt.Errorf("read openai response: %w", readErr)
+	}
+
+	var apiResponse openAIChatCompletionResponse
+	if len(responseBody) > 0 {
+		if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
+			if stream {
+				return openAIChatCompletionResponse{}, httpResponse.StatusCode, fmt.Errorf("openai malformed stream response: %w", err)
+			}
+			return openAIChatCompletionResponse{}, httpResponse.StatusCode, fmt.Errorf("openai malformed response: %w", err)
+		}
+	}
+
+	return apiResponse, httpResponse.StatusCode, nil
 }
 
 type openAIStreamHTTPError struct {
