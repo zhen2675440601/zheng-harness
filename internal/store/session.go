@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -28,18 +29,24 @@ func NewSessionRepository(database *Database) *SessionRepository {
 
 // SaveSession 存储或更新一条会话记录。
 func (r *SessionRepository) SaveSession(ctx context.Context, session domain.Session) error {
-	_, err := r.db.ExecContext(ctx, `
-INSERT INTO sessions (id, task_id, status, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)
+	provenanceJSON, err := marshalProvenance(session.Provenance)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+INSERT INTO sessions (id, task_id, status, provenance_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   task_id = excluded.task_id,
   status = excluded.status,
+  provenance_json = excluded.provenance_json,
   created_at = excluded.created_at,
   updated_at = excluded.updated_at
 `,
 		session.ID,
 		session.TaskID,
 		string(session.Status),
+		nullableString(provenanceJSON),
 		session.CreatedAt.UTC().Format(time.RFC3339Nano),
 		session.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	)
@@ -72,7 +79,7 @@ func (r *SessionRepository) AppendStep(ctx context.Context, sessionID string, st
 // Resume 恢复一个会话及其所有已持久化步骤。
 func (r *SessionRepository) Resume(ctx context.Context, sessionID string) (ResumeState, error) {
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, task_id, status, created_at, updated_at
+SELECT id, task_id, status, provenance_json, created_at, updated_at
 FROM sessions
 WHERE id = ?
 `, sessionID)
@@ -80,15 +87,23 @@ WHERE id = ?
 	var (
 		session              domain.Session
 		status               string
+		provenanceJSON       sql.NullString
 		createdAt, updatedAt string
 	)
-	if err := row.Scan(&session.ID, &session.TaskID, &status, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&session.ID, &session.TaskID, &status, &provenanceJSON, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ResumeState{}, err
 		}
 		return ResumeState{}, err
 	}
 	session.Status = domain.SessionStatus(status)
+	if provenanceJSON.Valid && provenanceJSON.String != "" {
+		var provenance domain.Provenance
+		if err := json.Unmarshal([]byte(provenanceJSON.String), &provenance); err != nil {
+			return ResumeState{}, err
+		}
+		session.Provenance = &provenance
+	}
 	parsedCreatedAt, err := time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
 		return ResumeState{}, err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -13,6 +14,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
     status TEXT NOT NULL,
+    provenance_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -39,7 +41,9 @@ CREATE TABLE IF NOT EXISTS steps (
     tool_error TEXT NOT NULL,
     tool_duration_ns INTEGER NOT NULL,
     verification_passed INTEGER NOT NULL,
+    verification_status TEXT NOT NULL DEFAULT '',
     verification_reason TEXT NOT NULL,
+    provenance_json TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (session_id, step_index),
     FOREIGN KEY (session_id) REFERENCES sessions(id)
@@ -95,8 +99,14 @@ func (d *Database) Init(ctx context.Context) error {
 	if d == nil || d.db == nil {
 		return fmt.Errorf("database is not initialized")
 	}
-	_, err := d.db.ExecContext(ctx, schema)
-	return err
+	if _, err := d.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	_, err := d.db.ExecContext(ctx, `ALTER TABLE steps ADD COLUMN verification_status TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !isDuplicateColumnError(err) {
+		return err
+	}
+	return nil
 }
 
 // SQL 为各仓储暴露底层数据库句柄。
@@ -113,4 +123,11 @@ func (d *Database) Close() error {
 		return nil
 	}
 	return d.db.Close()
+}
+
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }

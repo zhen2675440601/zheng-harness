@@ -16,6 +16,7 @@ const (
 	ProviderOpenAI    = "openai"
 	ProviderAnthropic = "anthropic"
 	ProviderDashScope = "dashscope"
+	ProviderPlugin    = "plugin"
 
 	VerifyModeOff      = "off"
 	VerifyModeStandard = "standard"
@@ -27,7 +28,9 @@ type Config struct {
 	DefaultProvider string
 	Providers       map[string]ProviderSettings
 	Runtime         RuntimeSettings
+	Server          ServerSettings
 	Provider        string
+	PluginProvider  string
 }
 
 type ProviderSettings struct {
@@ -47,19 +50,45 @@ type RuntimeSettings struct {
 	PluginCapabilities []string      `json:"plugin_capabilities"`
 }
 
+type ServerSettings struct {
+	ListenAddress    string        `json:"listen_address"`
+	JWTSecret        string        `json:"jwt_secret"`
+	JWTSecretFile    string        `json:"jwt_secret_file"`
+	ActiveSessionCap int           `json:"active_session_cap"`
+	ShutdownTimeout  time.Duration `json:"shutdown_timeout"`
+	EnableWAL        bool          `json:"enable_wal"`
+}
+
 type fileConfig struct {
 	DefaultProvider *string                       `json:"default_provider"`
 	Providers       map[string]providerFileConfig `json:"providers"`
 	Runtime         *runtimeFileConfig            `json:"runtime"`
+	Server          *serverFileConfig             `json:"server"`
 
-	Model         *string `json:"model"`
-	Provider      *string `json:"provider"`
-	MaxSteps      *int    `json:"max_steps"`
-	StepTimeout   *string `json:"step_timeout"`
-	MemoryLimitMB *int    `json:"memory_limit_mb"`
-	VerifyMode    *string `json:"verify_mode"`
-	APIKey        *string `json:"api_key"`
-	BaseURL       *string `json:"base_url"`
+	Model            *string `json:"model"`
+	Provider         *string `json:"provider"`
+	PluginProvider   *string `json:"plugin_provider"`
+	MaxSteps         *int    `json:"max_steps"`
+	StepTimeout      *string `json:"step_timeout"`
+	MemoryLimitMB    *int    `json:"memory_limit_mb"`
+	VerifyMode       *string `json:"verify_mode"`
+	APIKey           *string `json:"api_key"`
+	BaseURL          *string `json:"base_url"`
+	ListenAddress    *string `json:"listen_address"`
+	JWTSecret        *string `json:"jwt_secret"`
+	JWTSecretFile    *string `json:"jwt_secret_file"`
+	ActiveSessionCap *int    `json:"active_session_cap"`
+	ShutdownTimeout  *string `json:"shutdown_timeout"`
+	EnableWAL        *bool   `json:"enable_wal"`
+}
+
+type providerSelectionSource struct {
+	builtinID      string
+	pluginID       string
+	builtinOrigin  string
+	pluginOrigin   string
+	builtinDefined bool
+	pluginDefined  bool
 }
 
 type providerFileConfig struct {
@@ -77,6 +106,15 @@ type runtimeFileConfig struct {
 	AllowedCommands    []string `json:"allowed_commands"`
 	AllowedPluginPaths []string `json:"allowed_plugin_paths"`
 	PluginCapabilities []string `json:"plugin_capabilities"`
+}
+
+type serverFileConfig struct {
+	ListenAddress    *string `json:"listen_address"`
+	JWTSecret        *string `json:"jwt_secret"`
+	JWTSecretFile    *string `json:"jwt_secret_file"`
+	ActiveSessionCap *int    `json:"active_session_cap"`
+	ShutdownTimeout  *string `json:"shutdown_timeout"`
+	EnableWAL        *bool   `json:"enable_wal"`
 }
 
 // GetModel 通过 provider 边界契约暴露当前选定的模型。
@@ -122,12 +160,19 @@ func Default() Config {
 			MemoryLimitMB: 256,
 			VerifyMode:    VerifyModeStandard,
 		},
+		Server: ServerSettings{
+			ListenAddress:    ":8080",
+			ActiveSessionCap: 8,
+			ShutdownTimeout:  30 * time.Second,
+			EnableWAL:        true,
+		},
 	}
 }
 
 // Load 按以下优先级读取配置：默认值 < 配置文件 < 环境变量 < CLI 标志。
 func Load(args []string) (Config, error) {
 	cfg := Default()
+	selection := providerSelectionSource{}
 
 	configPath, configPathRequired, err := resolveConfigPath(args)
 	if err != nil {
@@ -136,13 +181,13 @@ func Load(args []string) (Config, error) {
 
 	// 先加载配置文件（默认值 < 配置文件）。
 	if configPath != "" {
-		if err := loadFromFile(&cfg, configPath, configPathRequired); err != nil {
+		if err := loadFromFile(&cfg, configPath, configPathRequired, &selection); err != nil {
 			return Config{}, err
 		}
 	}
 
 	// 然后应用环境变量（配置文件 < 环境变量）。
-	if err := applyEnv(&cfg); err != nil {
+	if err := applyEnv(&cfg, &selection); err != nil {
 		return Config{}, err
 	}
 
@@ -153,21 +198,35 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&configFlagDefault, "config", configFlagDefault, "path to JSON config file")
 	model := cfg.GetModel()
 	provider := cfg.Provider
+	pluginProvider := cfg.PluginProvider
 	maxSteps := cfg.Runtime.MaxSteps
 	stepTimeout := cfg.Runtime.StepTimeout
 	memoryLimitMB := cfg.Runtime.MemoryLimitMB
 	verifyMode := cfg.Runtime.VerifyMode
 	apiKey := cfg.GetAPIKey()
 	baseURL := cfg.GetBaseURL()
+	listenAddress := cfg.Server.ListenAddress
+	jwtSecret := cfg.Server.JWTSecret
+	jwtSecretFile := cfg.Server.JWTSecretFile
+	activeSessionCap := cfg.Server.ActiveSessionCap
+	shutdownTimeout := cfg.Server.ShutdownTimeout
+	enableWAL := cfg.Server.EnableWAL
 
 	fs.StringVar(&model, "model", model, "model identifier")
-	fs.StringVar(&provider, "provider", provider, "provider identifier")
+	fs.StringVar(&provider, "provider", provider, "built-in provider identifier")
+	fs.StringVar(&pluginProvider, "plugin-provider", pluginProvider, "plugin-backed provider identifier")
 	fs.IntVar(&maxSteps, "max-steps", maxSteps, "maximum runtime steps")
 	fs.DurationVar(&stepTimeout, "step-timeout", stepTimeout, "maximum duration per step")
 	fs.IntVar(&memoryLimitMB, "memory-limit-mb", memoryLimitMB, "memory budget in megabytes")
 	fs.StringVar(&verifyMode, "verify-mode", verifyMode, "verification mode")
 	fs.StringVar(&apiKey, "api-key", apiKey, "API key for LLM provider")
 	fs.StringVar(&baseURL, "base-url", baseURL, "base URL for LLM API endpoint")
+	fs.StringVar(&listenAddress, "listen-address", listenAddress, "server listen address")
+	fs.StringVar(&jwtSecret, "jwt-secret", jwtSecret, "server JWT secret")
+	fs.StringVar(&jwtSecretFile, "jwt-secret-file", jwtSecretFile, "server JWT secret file")
+	fs.IntVar(&activeSessionCap, "active-session-cap", activeSessionCap, "server active session cap")
+	fs.DurationVar(&shutdownTimeout, "shutdown-timeout", shutdownTimeout, "server shutdown timeout")
+	fs.BoolVar(&enableWAL, "server-enable-wal", enableWAL, "enable sqlite WAL mode for server")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -176,8 +235,40 @@ func Load(args []string) (Config, error) {
 	fs.Visit(func(f *flag.Flag) {
 		visitedFlags[f.Name] = true
 	})
+	if visitedFlags["provider"] && visitedFlags["plugin-provider"] {
+		return Config{}, errors.New("provider selection conflict: choose either --provider for built-in providers or --plugin-provider for plugin-backed providers")
+	}
 
 	provider = strings.ToLower(strings.TrimSpace(provider))
+	pluginProvider = strings.TrimSpace(pluginProvider)
+	if visitedFlags["provider"] {
+		if err := ensureNoSelectionConflict("CLI flag --provider", provider, selection.pluginOrigin, selection.pluginID, true); err != nil {
+			return Config{}, err
+		}
+		cfg.PluginProvider = ""
+		cfg.Provider = provider
+		selection.builtinID = provider
+		selection.builtinOrigin = "CLI flag --provider"
+		selection.builtinDefined = true
+		selection.pluginID = ""
+		selection.pluginOrigin = ""
+		selection.pluginDefined = false
+	}
+	if visitedFlags["plugin-provider"] {
+		if err := ensureNoSelectionConflict("CLI flag --plugin-provider", pluginProvider, selection.builtinOrigin, selection.builtinID, false); err != nil {
+			return Config{}, err
+		}
+		cfg.PluginProvider = pluginProvider
+		cfg.Provider = pluginProvider
+		selection.pluginID = pluginProvider
+		selection.pluginOrigin = "CLI flag --plugin-provider"
+		selection.pluginDefined = true
+		selection.builtinID = ""
+		selection.builtinOrigin = ""
+		selection.builtinDefined = false
+	}
+
+	provider = strings.ToLower(strings.TrimSpace(cfg.Provider))
 	cfg.Provider = provider
 	upsertSelectedProvider(&cfg)
 	// 仅当 provider 已存在于配置中时才更新其设置。
@@ -199,12 +290,21 @@ func Load(args []string) (Config, error) {
 		if selected.Type == "" {
 			selected.Type = inferProviderType(provider)
 		}
+		if cfg.PluginProvider != "" {
+			selected.Type = ProviderPlugin
+		}
 		cfg.Providers[provider] = selected
 	}
 	cfg.Runtime.MaxSteps = maxSteps
 	cfg.Runtime.StepTimeout = stepTimeout
 	cfg.Runtime.MemoryLimitMB = memoryLimitMB
 	cfg.Runtime.VerifyMode = strings.ToLower(strings.TrimSpace(verifyMode))
+	cfg.Server.ListenAddress = strings.TrimSpace(listenAddress)
+	cfg.Server.JWTSecret = strings.TrimSpace(jwtSecret)
+	cfg.Server.JWTSecretFile = strings.TrimSpace(jwtSecretFile)
+	cfg.Server.ActiveSessionCap = activeSessionCap
+	cfg.Server.ShutdownTimeout = shutdownTimeout
+	cfg.Server.EnableWAL = enableWAL
 	if strings.TrimSpace(cfg.DefaultProvider) == "" {
 		cfg.DefaultProvider = cfg.Provider
 	}
@@ -216,9 +316,33 @@ func Load(args []string) (Config, error) {
 	return cfg, nil
 }
 
-func applyEnv(cfg *Config) error {
+func applyEnv(cfg *Config, selection *providerSelectionSource) error {
 	if value := strings.TrimSpace(os.Getenv("ZHENG_PROVIDER")); value != "" {
+		if err := ensureNoSelectionConflict("environment variable ZHENG_PROVIDER", strings.ToLower(value), selection.pluginOrigin, selection.pluginID, true); err != nil {
+			return err
+		}
+		cfg.PluginProvider = ""
 		cfg.Provider = strings.ToLower(value)
+		selection.builtinID = cfg.Provider
+		selection.builtinOrigin = "environment variable ZHENG_PROVIDER"
+		selection.builtinDefined = true
+		selection.pluginID = ""
+		selection.pluginOrigin = ""
+		selection.pluginDefined = false
+		upsertSelectedProvider(cfg)
+	}
+	if value := strings.TrimSpace(os.Getenv("ZHENG_PLUGIN_PROVIDER")); value != "" {
+		if err := ensureNoSelectionConflict("environment variable ZHENG_PLUGIN_PROVIDER", value, selection.builtinOrigin, selection.builtinID, false); err != nil {
+			return err
+		}
+		cfg.PluginProvider = value
+		cfg.Provider = value
+		selection.pluginID = value
+		selection.pluginOrigin = "environment variable ZHENG_PLUGIN_PROVIDER"
+		selection.pluginDefined = true
+		selection.builtinID = ""
+		selection.builtinOrigin = ""
+		selection.builtinDefined = false
 		upsertSelectedProvider(cfg)
 	}
 	if value := strings.TrimSpace(os.Getenv("ZHENG_MODEL")); value != "" {
@@ -260,11 +384,41 @@ func applyEnv(cfg *Config) error {
 		selected.BaseURL = value
 		cfg.Providers[cfg.Provider] = selected
 	}
+	if value := strings.TrimSpace(os.Getenv("ZHENG_SERVER_LISTEN_ADDRESS")); value != "" {
+		cfg.Server.ListenAddress = value
+	}
+	if value := strings.TrimSpace(os.Getenv("ZHENG_SERVER_JWT_SECRET")); value != "" {
+		cfg.Server.JWTSecret = value
+	}
+	if value := strings.TrimSpace(os.Getenv("ZHENG_SERVER_JWT_SECRET_FILE")); value != "" {
+		cfg.Server.JWTSecretFile = value
+	}
+	if value := strings.TrimSpace(os.Getenv("ZHENG_SERVER_ACTIVE_SESSION_CAP")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("parse ZHENG_SERVER_ACTIVE_SESSION_CAP: %w", err)
+		}
+		cfg.Server.ActiveSessionCap = parsed
+	}
+	if value := strings.TrimSpace(os.Getenv("ZHENG_SERVER_SHUTDOWN_TIMEOUT")); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("parse ZHENG_SERVER_SHUTDOWN_TIMEOUT: %w", err)
+		}
+		cfg.Server.ShutdownTimeout = parsed
+	}
+	if value := strings.TrimSpace(os.Getenv("ZHENG_SERVER_ENABLE_WAL")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("parse ZHENG_SERVER_ENABLE_WAL: %w", err)
+		}
+		cfg.Server.EnableWAL = parsed
+	}
 
 	return nil
 }
 
-func loadFromFile(cfg *Config, path string, required bool) error {
+func loadFromFile(cfg *Config, path string, required bool, selection *providerSelectionSource) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !required && errors.Is(err, os.ErrNotExist) {
@@ -280,6 +434,20 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 
 	if parsed.DefaultProvider != nil {
 		cfg.DefaultProvider = strings.ToLower(strings.TrimSpace(*parsed.DefaultProvider))
+	}
+	if parsed.PluginProvider != nil {
+		pluginID := strings.TrimSpace(*parsed.PluginProvider)
+		if err := ensureNoSelectionConflict("config file field plugin_provider", pluginID, selection.builtinOrigin, selection.builtinID, false); err != nil {
+			return err
+		}
+		cfg.PluginProvider = pluginID
+		cfg.Provider = pluginID
+		selection.pluginID = pluginID
+		selection.pluginOrigin = "config file field plugin_provider"
+		selection.pluginDefined = true
+		selection.builtinID = ""
+		selection.builtinOrigin = ""
+		selection.builtinDefined = false
 	}
 	if parsed.Provider == nil && strings.TrimSpace(cfg.Provider) == "" {
 		cfg.Provider = cfg.DefaultProvider
@@ -302,7 +470,7 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 			cfg.Providers = providers
 		}
 	}
-	if parsed.Provider == nil {
+	if parsed.Provider == nil && parsed.PluginProvider == nil {
 		cfg.Provider = cfg.DefaultProvider
 	}
 	if parsed.Runtime != nil {
@@ -332,11 +500,45 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 			cfg.Runtime.PluginCapabilities = normalizeStringList(parsed.Runtime.PluginCapabilities)
 		}
 	}
+	if parsed.Server != nil {
+		if parsed.Server.ListenAddress != nil {
+			cfg.Server.ListenAddress = strings.TrimSpace(*parsed.Server.ListenAddress)
+		}
+		if parsed.Server.JWTSecret != nil {
+			cfg.Server.JWTSecret = strings.TrimSpace(*parsed.Server.JWTSecret)
+		}
+		if parsed.Server.JWTSecretFile != nil {
+			cfg.Server.JWTSecretFile = strings.TrimSpace(*parsed.Server.JWTSecretFile)
+		}
+		if parsed.Server.ActiveSessionCap != nil {
+			cfg.Server.ActiveSessionCap = *parsed.Server.ActiveSessionCap
+		}
+		if parsed.Server.ShutdownTimeout != nil {
+			value, err := parseDurationField(*parsed.Server.ShutdownTimeout, path, "server.shutdown_timeout")
+			if err != nil {
+				return err
+			}
+			cfg.Server.ShutdownTimeout = value
+		}
+		if parsed.Server.EnableWAL != nil {
+			cfg.Server.EnableWAL = *parsed.Server.EnableWAL
+		}
+	}
 
-	if parsed.Provider != nil || parsed.Model != nil || parsed.APIKey != nil || parsed.BaseURL != nil || parsed.MaxSteps != nil || parsed.StepTimeout != nil || parsed.MemoryLimitMB != nil || parsed.VerifyMode != nil {
+	if parsed.Provider != nil || parsed.Model != nil || parsed.APIKey != nil || parsed.BaseURL != nil || parsed.MaxSteps != nil || parsed.StepTimeout != nil || parsed.MemoryLimitMB != nil || parsed.VerifyMode != nil || parsed.ListenAddress != nil || parsed.JWTSecret != nil || parsed.JWTSecretFile != nil || parsed.ActiveSessionCap != nil || parsed.ShutdownTimeout != nil || parsed.EnableWAL != nil {
 		legacyProvider := cfg.Provider
 		if parsed.Provider != nil {
 			legacyProvider = strings.ToLower(strings.TrimSpace(*parsed.Provider))
+			if err := ensureNoSelectionConflict("config file field provider", legacyProvider, selection.pluginOrigin, selection.pluginID, true); err != nil {
+				return err
+			}
+			cfg.PluginProvider = ""
+			selection.builtinID = legacyProvider
+			selection.builtinOrigin = "config file field provider"
+			selection.builtinDefined = true
+			selection.pluginID = ""
+			selection.pluginOrigin = ""
+			selection.pluginDefined = false
 		}
 		if legacyProvider == "" {
 			legacyProvider = cfg.DefaultProvider
@@ -377,6 +579,28 @@ func loadFromFile(cfg *Config, path string, required bool) error {
 		}
 		if parsed.VerifyMode != nil {
 			cfg.Runtime.VerifyMode = strings.ToLower(strings.TrimSpace(*parsed.VerifyMode))
+		}
+		if parsed.ListenAddress != nil {
+			cfg.Server.ListenAddress = strings.TrimSpace(*parsed.ListenAddress)
+		}
+		if parsed.JWTSecret != nil {
+			cfg.Server.JWTSecret = strings.TrimSpace(*parsed.JWTSecret)
+		}
+		if parsed.JWTSecretFile != nil {
+			cfg.Server.JWTSecretFile = strings.TrimSpace(*parsed.JWTSecretFile)
+		}
+		if parsed.ActiveSessionCap != nil {
+			cfg.Server.ActiveSessionCap = *parsed.ActiveSessionCap
+		}
+		if parsed.ShutdownTimeout != nil {
+			value, err := parseDurationField(*parsed.ShutdownTimeout, path, "shutdown_timeout")
+			if err != nil {
+				return err
+			}
+			cfg.Server.ShutdownTimeout = value
+		}
+		if parsed.EnableWAL != nil {
+			cfg.Server.EnableWAL = *parsed.EnableWAL
 		}
 	}
 
@@ -522,6 +746,10 @@ func (c Config) Validate() error {
 		if selected.APIKey == "" {
 			return errors.New("dashscope provider requires API key (set ZHENG_API_KEY or --api-key)")
 		}
+	case ProviderPlugin:
+		if strings.TrimSpace(c.PluginProvider) == "" {
+			return errors.New("plugin-backed provider config requires plugin_provider selection")
+		}
 	default:
 		return fmt.Errorf("unsupported provider type %q", selected.Type)
 	}
@@ -536,6 +764,15 @@ func (c Config) Validate() error {
 	}
 	if c.Runtime.MemoryLimitMB <= 0 {
 		return errors.New("memory limit must be greater than zero")
+	}
+	if strings.TrimSpace(c.Server.ListenAddress) == "" {
+		return errors.New("server listen address must not be empty")
+	}
+	if c.Server.ActiveSessionCap <= 0 {
+		return errors.New("server active session cap must be greater than zero")
+	}
+	if c.Server.ShutdownTimeout <= 0 {
+		return errors.New("server shutdown timeout must be greater than zero")
 	}
 
 	switch c.Runtime.VerifyMode {
@@ -573,8 +810,26 @@ func upsertSelectedProvider(cfg *Config) {
 		if settings.Type == "" {
 			settings.Type = inferProviderType(provider)
 		}
+		if strings.TrimSpace(cfg.PluginProvider) != "" && provider == strings.TrimSpace(cfg.PluginProvider) {
+			settings.Type = ProviderPlugin
+		}
 		cfg.Providers[provider] = settings
 	}
+}
+
+func ensureNoSelectionConflict(selectedOrigin, selectedID, existingOrigin, existingID string, selectedBuiltin bool) error {
+	selectedID = strings.TrimSpace(selectedID)
+	existingID = strings.TrimSpace(existingID)
+	if selectedID == "" || existingID == "" || existingOrigin == "" {
+		return nil
+	}
+	selectedKind := "plugin-backed provider"
+	existingKind := "built-in provider"
+	if selectedBuiltin {
+		selectedKind = "built-in provider"
+		existingKind = "plugin-backed provider"
+	}
+	return fmt.Errorf("provider selection conflict: %s selected %s %q but %s already selected %s %q", selectedOrigin, selectedKind, selectedID, existingOrigin, existingKind, existingID)
 }
 
 func inferProviderType(providerName string) string {
@@ -592,7 +847,11 @@ func normalizeProviderType(value *string, providerName string) string {
 	if trimmed == "" {
 		return inferProviderType(providerName)
 	}
-	return strings.ToLower(trimmed)
+	trimmed = strings.ToLower(trimmed)
+	if trimmed == ProviderPlugin {
+		return ProviderPlugin
+	}
+	return trimmed
 }
 
 func trimStringPointer(value *string) string {

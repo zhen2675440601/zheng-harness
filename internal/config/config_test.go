@@ -171,6 +171,80 @@ func TestLoadUsesMultiProviderConfigAndSwitchesProvider(t *testing.T) {
 	}
 }
 
+func TestLoadPreservesBuiltInProviderConfigCompatibility(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "openai",
+		"providers": {
+			"openai": {
+				"type": "openai",
+				"model": "gpt-4.1-mini",
+				"api_key": "built-in-key"
+			}
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	cfg, err := config.Load([]string{"-config", configPath})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Provider != config.ProviderOpenAI {
+		t.Fatalf("provider = %q, want %q", cfg.Provider, config.ProviderOpenAI)
+	}
+	if cfg.PluginProvider != "" {
+		t.Fatalf("plugin provider = %q, want empty", cfg.PluginProvider)
+	}
+	if cfg.GetProviderType() != config.ProviderOpenAI {
+		t.Fatalf("provider type = %q, want %q", cfg.GetProviderType(), config.ProviderOpenAI)
+	}
+}
+
+func TestLoadSupportsPluginProviderSelection(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "openai",
+		"plugin_provider": "acme/provider",
+		"providers": {
+			"openai": {
+				"type": "openai",
+				"model": "gpt-4.1-mini"
+			},
+			"acme/provider": {
+				"type": "plugin",
+				"model": "plugin-model"
+			}
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	cfg, err := config.Load([]string{"-config", configPath})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Provider != "acme/provider" {
+		t.Fatalf("provider = %q, want acme/provider", cfg.Provider)
+	}
+	if cfg.PluginProvider != "acme/provider" {
+		t.Fatalf("plugin provider = %q, want acme/provider", cfg.PluginProvider)
+	}
+	if cfg.GetProviderType() != config.ProviderPlugin {
+		t.Fatalf("provider type = %q, want %q", cfg.GetProviderType(), config.ProviderPlugin)
+	}
+	if cfg.GetModel() != "plugin-model" {
+		t.Fatalf("model = %q, want plugin-model", cfg.GetModel())
+	}
+	if cfg.DefaultProvider != config.ProviderOpenAI {
+		t.Fatalf("default provider = %q, want %q", cfg.DefaultProvider, config.ProviderOpenAI)
+	}
+}
+
 func TestLoadUsesRuntimeAllowedCommandsOverride(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "zheng.json")
 	if err := os.WriteFile(configPath, []byte(`{
@@ -343,6 +417,44 @@ func TestInvalidConfigFailsFast(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "provider \"openai\" not found") {
 			t.Fatalf("error = %v, want provider not found error", err)
+		}
+	})
+
+	t.Run("conflicting config provider and plugin provider", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "zheng.json")
+		if err := os.WriteFile(configPath, []byte(`{
+			"provider": "openai",
+			"plugin_provider": "acme/provider",
+			"providers": {
+				"openai": {
+					"type": "openai",
+					"model": "gpt-4.1-mini"
+				},
+				"acme/provider": {
+					"type": "plugin",
+					"model": "plugin-model"
+				}
+			}
+		}`), 0o600); err != nil {
+			t.Fatalf("write config file: %v", err)
+		}
+
+		_, err := config.Load([]string{"-config", configPath})
+		if err == nil {
+			t.Fatal("expected config load to fail with conflicting provider selections")
+		}
+		if !strings.Contains(err.Error(), "provider selection conflict") {
+			t.Fatalf("error = %v, want provider selection conflict", err)
+		}
+	})
+
+	t.Run("conflicting CLI provider and plugin provider", func(t *testing.T) {
+		_, err := config.Load([]string{"-provider", config.ProviderOpenAI, "-plugin-provider", "acme/provider"})
+		if err == nil {
+			t.Fatal("expected config load to fail with conflicting CLI selections")
+		}
+		if !strings.Contains(err.Error(), "provider selection conflict") {
+			t.Fatalf("error = %v, want provider selection conflict", err)
 		}
 	})
 }

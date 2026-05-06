@@ -17,7 +17,11 @@ type SQLiteMemoryStore struct {
 }
 
 func NewMemoryStore(dbPath string) (*SQLiteMemoryStore, error) {
-	db, err := openSQLite(dbPath)
+	return NewMemoryStoreWithOptions(dbPath, SQLiteOptions{})
+}
+
+func NewMemoryStoreWithOptions(dbPath string, opts SQLiteOptions) (*SQLiteMemoryStore, error) {
+	db, err := openSQLiteWithOptions(dbPath, opts)
 	if err != nil {
 		return nil, err
 	}

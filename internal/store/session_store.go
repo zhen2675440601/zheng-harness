@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"zheng-harness/internal/domain"
@@ -13,6 +14,31 @@ import (
 
 type SQLiteSessionStore struct {
 	db *sql.DB
+}
+
+type InspectState struct {
+	Session domain.Session
+	Task    domain.Task
+	Plan    domain.Plan
+	Steps   []domain.Step
+	Lifecycle PersistedSessionLifecycle
+}
+
+type SessionLifecyclePhase string
+
+const (
+	SessionLifecycleQueued    SessionLifecyclePhase = "queued"
+	SessionLifecycleRunning   SessionLifecyclePhase = "running"
+	SessionLifecycleCompleted SessionLifecyclePhase = "completed"
+	SessionLifecycleFailed    SessionLifecyclePhase = "failed"
+	SessionLifecycleCancelled SessionLifecyclePhase = "cancelled"
+)
+
+type PersistedSessionLifecycle struct {
+	Phase      SessionLifecyclePhase
+	Active     bool
+	Terminal   bool
+	Resumable  bool
 }
 
 type storedTask struct {
@@ -24,7 +50,8 @@ type storedTask struct {
 }
 
 type storedSessionMetadata struct {
-	Task *storedTask `json:"task,omitempty"`
+	Task       *storedTask        `json:"task,omitempty"`
+	Provenance *domain.Provenance `json:"provenance,omitempty"`
 }
 
 type storedPlan struct {
@@ -33,7 +60,11 @@ type storedPlan struct {
 }
 
 func NewSQLiteSessionStore(dbPath string) (*SQLiteSessionStore, error) {
-	db, err := openSQLite(dbPath)
+	return NewSQLiteSessionStoreWithOptions(dbPath, SQLiteOptions{})
+}
+
+func NewSQLiteSessionStoreWithOptions(dbPath string, opts SQLiteOptions) (*SQLiteSessionStore, error) {
+	db, err := openSQLiteWithOptions(dbPath, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -51,20 +82,48 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, session domain.Ses
 	if s == nil || s.db == nil {
 		return errors.New("sqlite session store is not initialized")
 	}
+	metadata, err := s.loadSessionMetadata(ctx, session.ID)
+	if err != nil {
+		return fmt.Errorf("load existing session metadata for %q: %w", session.ID, err)
+	}
+	metadata.Provenance = mergeStoredProvenance(metadata.Provenance, session.Provenance)
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("marshal session metadata for %q: %w", session.ID, err)
+	}
+	provenanceJSON, err := marshalProvenance(metadata.Provenance)
+	if err != nil {
+		return fmt.Errorf("marshal session provenance for %q: %w", session.ID, err)
+	}
 
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, task_id, status, config_json, created_at, updated_at, terminated_reason)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+	lifecycle := lifecycleForStatus(session.Status)
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO sessions (id, task_id, status, lifecycle_phase, is_active, is_terminal, is_resumable, config_json, provenance_json, created_at, updated_at, terminated_reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			task_id = excluded.task_id,
 			status = excluded.status,
+			lifecycle_phase = excluded.lifecycle_phase,
+			is_active = excluded.is_active,
+			is_terminal = excluded.is_terminal,
+			is_resumable = excluded.is_resumable,
+			config_json = excluded.config_json,
+			provenance_json = excluded.provenance_json,
 			updated_at = excluded.updated_at,
 			terminated_reason = excluded.terminated_reason
-	`, session.ID, session.TaskID, string(session.Status), nil, session.CreatedAt.UTC(), session.UpdatedAt.UTC(), nil)
+	`, session.ID, session.TaskID, string(session.Status), string(lifecycle.Phase), boolToSQLiteInt(lifecycle.Active), boolToSQLiteInt(lifecycle.Terminal), boolToSQLiteInt(lifecycle.Resumable), nullableMetadataJSON(metadataJSON), nullableString(provenanceJSON), session.CreatedAt.UTC(), session.UpdatedAt.UTC(), lifecycle.terminatedReasonValue())
 	if err != nil {
 		return fmt.Errorf("save session %q: %w", session.ID, err)
 	}
 	return nil
+}
+
+func (s *SQLiteSessionStore) RawDB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
 }
 
 func (s *SQLiteSessionStore) SaveTask(ctx context.Context, sessionID string, task domain.Task) error {
@@ -72,7 +131,12 @@ func (s *SQLiteSessionStore) SaveTask(ctx context.Context, sessionID string, tas
 		return errors.New("sqlite session store is not initialized")
 	}
 
-	metadata, err := json.Marshal(storedSessionMetadata{Task: newStoredTask(task)})
+	existingMetadata, err := s.loadSessionMetadata(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("load existing session metadata for session %q: %w", sessionID, err)
+	}
+	existingMetadata.Task = newStoredTask(task)
+	metadata, err := json.Marshal(existingMetadata)
 	if err != nil {
 		return fmt.Errorf("marshal task metadata for session %q: %w", sessionID, err)
 	}
@@ -134,11 +198,15 @@ func (s *SQLiteSessionStore) AppendStep(ctx context.Context, sessionID string, s
 	if err != nil {
 		return fmt.Errorf("marshal step verification: %w", err)
 	}
+	provenanceJSON, err := marshalProvenance(step.Provenance)
+	if err != nil {
+		return fmt.Errorf("marshal step provenance: %w", err)
+	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO steps (session_id, step_index, action_json, observation_json, verification_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, sessionID, step.Index, string(actionJSON), string(observationJSON), string(verificationJSON), time.Now().UTC())
+		INSERT INTO steps (session_id, step_index, action_json, observation_json, provenance_json, verification_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, sessionID, step.Index, string(actionJSON), string(observationJSON), nullableString(provenanceJSON), string(verificationJSON), time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("append step %d for session %q: %w", step.Index, sessionID, err)
 	}
@@ -150,7 +218,7 @@ func (s *SQLiteSessionStore) ResumeSession(ctx context.Context, sessionID string
 		return domain.Session{}, domain.Plan{}, nil, errors.New("sqlite session store is not initialized")
 	}
 
-	session, err := s.loadSession(ctx, sessionID)
+	session, _, err := s.loadSession(ctx, sessionID)
 	if err != nil {
 		return domain.Session{}, domain.Plan{}, nil, err
 	}
@@ -170,7 +238,7 @@ func (s *SQLiteSessionStore) LoadTask(ctx context.Context, sessionID string) (do
 		return domain.Task{}, false, errors.New("sqlite session store is not initialized")
 	}
 
-	session, metadataTask, err := s.loadSessionRecord(ctx, sessionID)
+	session, metadataTask, _, err := s.loadSessionRecord(ctx, sessionID)
 	if err != nil {
 		return domain.Task{}, false, err
 	}
@@ -203,34 +271,89 @@ func (s *SQLiteSessionStore) LoadTask(ctx context.Context, sessionID string) (do
 	return task.Normalize(), true, nil
 }
 
-func (s *SQLiteSessionStore) loadSession(ctx context.Context, sessionID string) (domain.Session, error) {
-	session, _, err := s.loadSessionRecord(ctx, sessionID)
-	return session, err
+func (s *SQLiteSessionStore) InspectSession(ctx context.Context, sessionID string) (InspectState, error) {
+	if s == nil || s.db == nil {
+		return InspectState{}, errors.New("sqlite session store is not initialized")
+	}
+
+	session, metadataTask, lifecycle, err := s.loadSessionRecord(ctx, sessionID)
+	if err != nil {
+		return InspectState{}, err
+	}
+	steps, err := s.loadSteps(ctx, sessionID)
+	if err != nil {
+		return InspectState{}, err
+	}
+	plan, err := s.loadLatestPlan(ctx, session.TaskID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) && !strings.Contains(err.Error(), "not found") {
+			return InspectState{}, err
+		}
+		plan = domain.Plan{TaskID: session.TaskID}
+	}
+	task := domain.Task{
+		ID:          session.TaskID,
+		Description: plan.Summary,
+		Goal:        plan.Summary,
+		CreatedAt:   session.CreatedAt,
+	}
+	if metadataTask != nil {
+		task.Category = metadataTask.Category
+		if metadataTask.Description != "" {
+			task.Description = metadataTask.Description
+		}
+		if metadataTask.Goal != "" {
+			task.Goal = metadataTask.Goal
+		}
+		task.ProtocolHint = metadataTask.ProtocolHint
+		task.VerificationPolicy = metadataTask.VerificationPolicy
+	}
+	return InspectState{Session: session, Task: task.Normalize(), Plan: plan, Steps: steps, Lifecycle: lifecycle}, nil
 }
 
-func (s *SQLiteSessionStore) loadSessionRecord(ctx context.Context, sessionID string) (domain.Session, *storedTask, error) {
+func (s *SQLiteSessionStore) loadSession(ctx context.Context, sessionID string) (domain.Session, PersistedSessionLifecycle, error) {
+	session, _, lifecycle, err := s.loadSessionRecord(ctx, sessionID)
+	return session, lifecycle, err
+}
+
+func (s *SQLiteSessionStore) loadSessionRecord(ctx context.Context, sessionID string) (domain.Session, *storedTask, PersistedSessionLifecycle, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, task_id, status, config_json, created_at, updated_at
+		SELECT id, task_id, status, lifecycle_phase, is_active, is_terminal, is_resumable, config_json, created_at, updated_at
 		FROM sessions
 		WHERE id = ?
 	`, sessionID)
 
 	var session domain.Session
 	var status string
+	var lifecyclePhase sql.NullString
+	var activeValue sql.NullInt64
+	var terminalValue sql.NullInt64
+	var resumableValue sql.NullInt64
 	var configJSON sql.NullString
-	if err := row.Scan(&session.ID, &session.TaskID, &status, &configJSON, &session.CreatedAt, &session.UpdatedAt); err != nil {
+	if err := row.Scan(&session.ID, &session.TaskID, &status, &lifecyclePhase, &activeValue, &terminalValue, &resumableValue, &configJSON, &session.CreatedAt, &session.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return domain.Session{}, nil, fmt.Errorf("session %q not found: %w", sessionID, err)
+			return domain.Session{}, nil, PersistedSessionLifecycle{}, fmt.Errorf("session %q not found: %w", sessionID, err)
 		}
-		return domain.Session{}, nil, fmt.Errorf("load session %q: %w", sessionID, err)
+		return domain.Session{}, nil, PersistedSessionLifecycle{}, fmt.Errorf("load session %q: %w", sessionID, err)
 	}
 	session.Status = domain.SessionStatus(status)
+	lifecycle := persistedLifecycleFromRow(session.Status, lifecyclePhase, activeValue, terminalValue, resumableValue)
 
 	metadata, err := parseStoredSessionMetadata(configJSON)
 	if err != nil {
-		return domain.Session{}, nil, fmt.Errorf("load session %q metadata: %w", sessionID, err)
+		return domain.Session{}, nil, PersistedSessionLifecycle{}, fmt.Errorf("load session %q metadata: %w", sessionID, err)
 	}
-	return session, metadata.Task, nil
+	row = s.db.QueryRowContext(ctx, `SELECT provenance_json FROM sessions WHERE id = ?`, sessionID)
+	var provenanceJSON sql.NullString
+	if err := row.Scan(&provenanceJSON); err != nil {
+		return domain.Session{}, nil, PersistedSessionLifecycle{}, fmt.Errorf("load session %q provenance: %w", sessionID, err)
+	}
+	persistedProvenance, err := parseProvenance(provenanceJSON)
+	if err != nil {
+		return domain.Session{}, nil, PersistedSessionLifecycle{}, fmt.Errorf("load session %q provenance: %w", sessionID, err)
+	}
+	session.Provenance = mergeStoredProvenance(metadata.Provenance, persistedProvenance)
+	return session, metadata.Task, lifecycle, nil
 }
 
 func (s *SQLiteSessionStore) loadLatestPlan(ctx context.Context, taskID string) (domain.Plan, error) {
@@ -285,12 +408,16 @@ func parseStoredSessionMetadata(raw sql.NullString) (storedSessionMetadata, erro
 	if metadata.Task != nil {
 		metadata.Task.Category = metadata.Task.Category.Normalize()
 	}
+	if metadata.Provenance != nil {
+		normalized := metadata.Provenance.Normalize()
+		metadata.Provenance = &normalized
+	}
 	return metadata, nil
 }
 
 func (s *SQLiteSessionStore) loadSteps(ctx context.Context, sessionID string) ([]domain.Step, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT step_index, action_json, observation_json, verification_json
+		SELECT step_index, action_json, observation_json, provenance_json, verification_json
 		FROM steps
 		WHERE session_id = ?
 		ORDER BY step_index ASC, id ASC
@@ -306,9 +433,10 @@ func (s *SQLiteSessionStore) loadSteps(ctx context.Context, sessionID string) ([
 			step             domain.Step
 			actionJSON       string
 			observationJSON  string
+			provenanceJSON   sql.NullString
 			verificationJSON string
 		)
-		if err := rows.Scan(&step.Index, &actionJSON, &observationJSON, &verificationJSON); err != nil {
+		if err := rows.Scan(&step.Index, &actionJSON, &observationJSON, &provenanceJSON, &verificationJSON); err != nil {
 			return nil, fmt.Errorf("scan step for session %q: %w", sessionID, err)
 		}
 		if err := json.Unmarshal([]byte(actionJSON), &step.Action); err != nil {
@@ -316,6 +444,10 @@ func (s *SQLiteSessionStore) loadSteps(ctx context.Context, sessionID string) ([
 		}
 		if err := json.Unmarshal([]byte(observationJSON), &step.Observation); err != nil {
 			return nil, fmt.Errorf("unmarshal observation for session %q: %w", sessionID, err)
+		}
+		step.Provenance, err = parseProvenance(provenanceJSON)
+		if err != nil {
+			return nil, fmt.Errorf("unmarshal provenance for session %q: %w", sessionID, err)
 		}
 		if verificationJSON != "" {
 			if err := json.Unmarshal([]byte(verificationJSON), &step.Verification); err != nil {
@@ -328,4 +460,79 @@ func (s *SQLiteSessionStore) loadSteps(ctx context.Context, sessionID string) ([
 		return nil, fmt.Errorf("iterate steps for session %q: %w", sessionID, err)
 	}
 	return steps, nil
+}
+
+func (s *SQLiteSessionStore) loadSessionMetadata(ctx context.Context, sessionID string) (storedSessionMetadata, error) {
+	if sessionID == "" {
+		return storedSessionMetadata{}, nil
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT config_json FROM sessions WHERE id = ?`, sessionID)
+	var configJSON sql.NullString
+	if err := row.Scan(&configJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return storedSessionMetadata{}, nil
+		}
+		return storedSessionMetadata{}, err
+	}
+	return parseStoredSessionMetadata(configJSON)
+}
+
+func nullableMetadataJSON(payload []byte) any {
+	if len(payload) == 0 || string(payload) == "{}" {
+		return nil
+	}
+	return string(payload)
+}
+
+func boolToSQLiteInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func persistedLifecycleFromRow(status domain.SessionStatus, phase sql.NullString, active sql.NullInt64, terminal sql.NullInt64, resumable sql.NullInt64) PersistedSessionLifecycle {
+	derived := lifecycleForStatus(status)
+	if phase.Valid && phase.String != "" {
+		derived.Phase = SessionLifecyclePhase(phase.String)
+	}
+	if active.Valid {
+		derived.Active = active.Int64 != 0
+	}
+	if terminal.Valid {
+		derived.Terminal = terminal.Int64 != 0
+	}
+	if resumable.Valid {
+		derived.Resumable = resumable.Int64 != 0
+	}
+	return derived.PersistedSessionLifecycle
+}
+
+type lifecycleRecord struct {
+	PersistedSessionLifecycle
+	terminatedReason string
+}
+
+func (l lifecycleRecord) terminatedReasonValue() any {
+	if strings.TrimSpace(l.terminatedReason) == "" {
+		return nil
+	}
+	return l.terminatedReason
+}
+
+func lifecycleForStatus(status domain.SessionStatus) lifecycleRecord {
+	switch status {
+	case domain.SessionStatusPending:
+		return lifecycleRecord{PersistedSessionLifecycle: PersistedSessionLifecycle{Phase: SessionLifecycleQueued, Active: false, Terminal: false, Resumable: true}}
+	case domain.SessionStatusRunning, domain.SessionStatusBlockedInput:
+		return lifecycleRecord{PersistedSessionLifecycle: PersistedSessionLifecycle{Phase: SessionLifecycleRunning, Active: true, Terminal: false, Resumable: false}}
+	case domain.SessionStatusSuccess:
+		return lifecycleRecord{PersistedSessionLifecycle: PersistedSessionLifecycle{Phase: SessionLifecycleCompleted, Active: false, Terminal: true, Resumable: false}, terminatedReason: string(status)}
+	case domain.SessionStatusInterrupted:
+		return lifecycleRecord{PersistedSessionLifecycle: PersistedSessionLifecycle{Phase: SessionLifecycleCancelled, Active: false, Terminal: false, Resumable: true}, terminatedReason: string(status)}
+	case domain.SessionStatusVerificationFailed, domain.SessionStatusBudgetExceeded, domain.SessionStatusFatalError:
+		return lifecycleRecord{PersistedSessionLifecycle: PersistedSessionLifecycle{Phase: SessionLifecycleFailed, Active: false, Terminal: true, Resumable: false}, terminatedReason: string(status)}
+	default:
+		return lifecycleRecord{PersistedSessionLifecycle: PersistedSessionLifecycle{Phase: SessionLifecycleQueued, Active: false, Terminal: false, Resumable: true}}
+	}
 }

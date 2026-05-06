@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"zheng-harness/internal/domain"
@@ -22,6 +23,7 @@ func NewStepRepository(database *Database) *StepRepository {
 func (r *StepRepository) Append(ctx context.Context, sessionID string, step domain.Step) error {
 	var toolName, toolInput, toolOutput, toolError string
 	var toolTimeout, toolDuration int64
+	provenanceJSON, err := marshalProvenance(step.Provenance)
 	if step.Action.ToolCall != nil {
 		toolName = step.Action.ToolCall.Name
 		toolInput = step.Action.ToolCall.Input
@@ -32,12 +34,12 @@ func (r *StepRepository) Append(ctx context.Context, sessionID string, step doma
 		toolError = step.Observation.ToolResult.Error
 		toolDuration = int64(step.Observation.ToolResult.Duration)
 	}
-	_, err := r.db.ExecContext(ctx, `
+	_, err = r.db.ExecContext(ctx, `
 INSERT OR REPLACE INTO steps (
   session_id, step_index, action_type, action_summary, action_response,
   tool_name, tool_input, tool_timeout_ns, observation_summary, observation_final_response,
-  tool_output, tool_error, tool_duration_ns, verification_passed, verification_reason, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  tool_output, tool_error, tool_duration_ns, verification_passed, verification_status, verification_reason, provenance_json, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		sessionID,
 		step.Index,
@@ -53,7 +55,9 @@ INSERT OR REPLACE INTO steps (
 		toolError,
 		toolDuration,
 		boolToInt(step.Verification.Passed),
+		string(step.Verification.StatusOrDefault()),
 		step.Verification.Reason,
+		nullableString(provenanceJSON),
 		time.Now().UTC().Format(time.RFC3339Nano),
 	)
 	return err
@@ -66,7 +70,7 @@ SELECT step_index, action_type, action_summary, action_response,
        tool_name, tool_input, tool_timeout_ns,
        observation_summary, observation_final_response,
        tool_output, tool_error, tool_duration_ns,
-       verification_passed, verification_reason
+       verification_passed, verification_status, verification_reason, provenance_json
 FROM steps
 WHERE session_id = ?
 ORDER BY step_index ASC
@@ -84,8 +88,9 @@ ORDER BY step_index ASC
 			toolName, toolInput                                 string
 			toolTimeout, toolDuration                           int64
 			observationSummary, observationFinalResponse        string
-			toolOutput, toolError, verificationReason           string
+			toolOutput, toolError, verificationStatus, verificationReason string
 			verificationPassed                                  int
+			provenanceJSON                                      sql.NullString
 		)
 		if err := rows.Scan(
 			&stepIndex,
@@ -101,7 +106,9 @@ ORDER BY step_index ASC
 			&toolError,
 			&toolDuration,
 			&verificationPassed,
+			&verificationStatus,
 			&verificationReason,
+			&provenanceJSON,
 		); err != nil {
 			return nil, err
 		}
@@ -119,12 +126,21 @@ ORDER BY step_index ASC
 			},
 			Verification: domain.VerificationResult{
 				Passed: verificationPassed == 1,
+				Status: domain.VerificationStatus(verificationStatus),
 				Reason: verificationReason,
 			},
 		}
+		step.Verification = step.Verification.Normalize()
 		if toolName != "" {
 			step.Action.ToolCall = &domain.ToolCall{Name: toolName, Input: toolInput, Timeout: time.Duration(toolTimeout)}
 			step.Observation.ToolResult = &domain.ToolResult{ToolName: toolName, Output: toolOutput, Error: toolError, Duration: time.Duration(toolDuration)}
+		}
+		if provenanceJSON.Valid && provenanceJSON.String != "" {
+			var provenance domain.Provenance
+			if err := json.Unmarshal([]byte(provenanceJSON.String), &provenance); err != nil {
+				return nil, err
+			}
+			step.Provenance = &provenance
 		}
 		steps = append(steps, step)
 	}
