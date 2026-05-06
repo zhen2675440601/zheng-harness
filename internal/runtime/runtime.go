@@ -18,6 +18,18 @@ type streamContextKey struct{}
 
 type streamEventEmitter func(domain.StreamingEvent) error
 
+type verifierProvenanceCarrier interface {
+	VerifierProvenance() *domain.PluginMetadata
+}
+
+type providerProvenanceCarrier interface {
+	ProviderProvenance() *domain.PluginMetadata
+}
+
+type agentStrategyMetadataCarrier interface {
+	Metadata() domain.PluginMetadata
+}
+
 type iterationOutcome struct {
 	terminal bool
 	status   domain.SessionStatus
@@ -39,6 +51,8 @@ type Engine struct {
 	Memory         domain.MemoryStore
 	Sessions       domain.SessionStore
 	Verifier       domain.Verifier
+	AgentStrategies *AgentStrategyRegistry
+	AgentStrategyID string
 	EventChannel   *EventChannel
 	Clock          func() time.Time
 	MaxSteps       int
@@ -48,7 +62,7 @@ type Engine struct {
 
 // Run 执行一个有界的计划-执行-验证循环，直到成功或终止。
 func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
-	if e.Model == nil || e.Tools == nil || e.Memory == nil || e.Sessions == nil || e.Verifier == nil {
+	if !e.hasRequiredDependencies() {
 		return domain.Session{}, domain.Plan{}, nil, fmt.Errorf("runtime engine requires all dependencies")
 	}
 
@@ -70,6 +84,10 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 	}
 	protocol := e.resolveTaskProtocol(task)
 	task = protocol.Task
+	strategy, err := e.resolveAgentStrategy()
+	if err != nil {
+		return domain.Session{}, domain.Plan{}, nil, err
+	}
 
 	session := domain.Session{
 		ID:        task.ID + "-session",
@@ -77,6 +95,12 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 		Status:    domain.SessionStatusRunning,
 		CreatedAt: timestamp,
 		UpdatedAt: timestamp,
+	}
+	if metadata := agentStrategyMetadata(strategy); metadata != nil {
+		session.Provenance = mergeProvenance(session.Provenance, *metadata)
+	}
+	if metadata := providerProvenanceFromModel(e.Model); metadata != nil {
+		session.Provenance = mergeProvenance(session.Provenance, *metadata)
 	}
 
 	if err := e.Sessions.SaveSession(ctx, session); err != nil {
@@ -93,13 +117,13 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 
 	steps := make([]domain.Step, 0, maxSteps)
 	retries := 0
-	deadline := timestamp.Add(sessionTimeout)
+	deadline := time.Now().Add(sessionTimeout)
 
 	for stepIndex := 1; stepIndex <= maxSteps; stepIndex++ {
 		if err := ctx.Err(); err != nil {
 			return e.failSession(ctx, session, domain.SessionStatusInterrupted, plan, steps, err)
 		}
-		if !now().Before(deadline) {
+		if !time.Now().Before(deadline) {
 			return e.failSession(ctx, session, domain.SessionStatusInterrupted, plan, steps, context.DeadlineExceeded)
 		}
 
@@ -118,6 +142,18 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 			Action:       action,
 			Observation:  observation,
 			Verification: verification,
+		}
+		if metadata := agentStrategyMetadata(strategy); metadata != nil {
+			step.Provenance = mergeProvenance(step.Provenance, *metadata)
+			session.Provenance = mergeProvenance(session.Provenance, *metadata)
+		}
+		if metadata := providerProvenanceFromModel(e.Model); metadata != nil {
+			step.Provenance = mergeProvenance(step.Provenance, *metadata)
+			session.Provenance = mergeProvenance(session.Provenance, *metadata)
+		}
+		if metadata := verifierProvenanceFromEngine(e.Verifier); metadata != nil {
+			step.Provenance = mergeProvenance(step.Provenance, *metadata)
+			session.Provenance = mergeProvenance(session.Provenance, *metadata)
 		}
 		steps = append(steps, step)
 
@@ -159,9 +195,9 @@ func (e Engine) Run(ctx context.Context, task domain.Task) (domain.Session, doma
 	return e.failSession(ctx, session, domain.SessionStatusBudgetExceeded, plan, steps, nil)
 }
 
-// RunStream starts the runtime loop asynchronously and returns an event channel immediately.
+// RunStream 异步启动运行时循环，并立即返回事件通道。
 func (e Engine) RunStream(ctx context.Context, task domain.Task) (*EventChannel, domain.Session, domain.Plan, []domain.Step, error) {
-	if e.Model == nil || e.Tools == nil || e.Memory == nil || e.Sessions == nil || e.Verifier == nil {
+	if !e.hasRequiredDependencies() {
 		return nil, domain.Session{}, domain.Plan{}, nil, fmt.Errorf("runtime engine requires all dependencies")
 	}
 
@@ -169,9 +205,6 @@ func (e Engine) RunStream(ctx context.Context, task domain.Task) (*EventChannel,
 	streamEngine := e
 	streamEngine.EventChannel = eventChannel
 	streamCtx := withStreamEventEmitter(ctx, func(event domain.StreamingEvent) error {
-		if event.Type != domain.EventTokenDelta {
-			return nil
-		}
 		return eventChannel.Emit(event)
 	})
 
@@ -200,7 +233,15 @@ func streamEmitterFromContext(ctx context.Context) streamEventEmitter {
 
 func (e Engine) createPlan(ctx context.Context, protocol ResolvedTaskProtocol, session domain.Session, createdAt time.Time) (domain.Plan, error) {
 	memory := e.recallMemory(ctx, protocol.Task, session)
-	plan, err := e.Model.CreatePlan(ctx, protocol.Task, session, memory)
+	strategy, err := e.resolveAgentStrategy()
+	if err != nil {
+		return domain.Plan{}, err
+	}
+	planDecision, err := strategy.CreatePlan(ctx, AgentPlanContext{Task: protocol.Task, Session: session, Memory: memory})
+	if err != nil {
+		return domain.Plan{}, err
+	}
+	plan, err := validateAgentPlanDecision(protocol.Task, planDecision)
 	if err != nil {
 		return domain.Plan{}, err
 	}
@@ -219,7 +260,15 @@ func (e Engine) createPlan(ctx context.Context, protocol ResolvedTaskProtocol, s
 func (e Engine) executeIteration(ctx context.Context, protocol ResolvedTaskProtocol, session domain.Session, plan domain.Plan, steps []domain.Step) (domain.Action, domain.Observation, domain.VerificationResult, error) {
 	tools := e.listToolInfo()
 	memory := e.recallMemory(ctx, protocol.Task, session)
-	action, err := e.Model.NextAction(ctx, protocol.Task, session, plan, steps, memory, tools)
+	strategy, err := e.resolveAgentStrategy()
+	if err != nil {
+		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
+	}
+	actionDecision, err := strategy.NextAction(ctx, AgentActionContext{Task: protocol.Task, Session: session, Plan: plan, Steps: steps, Memory: memory, AllowedTools: tools})
+	if err != nil {
+		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
+	}
+	action, err := validateAgentActionDecision(AgentActionContext{AllowedTools: tools}, actionDecision)
 	if err != nil {
 		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
 	}
@@ -242,10 +291,15 @@ func (e Engine) executeIteration(ctx context.Context, protocol ResolvedTaskProto
 		}
 	}
 
-	observation, err := e.Model.Observe(ctx, protocol.Task, session, plan, action, result)
+	observationDecision, err := strategy.Observe(ctx, AgentObservationContext{Task: protocol.Task, Session: session, Plan: plan, Action: action, ToolResult: result})
 	if err != nil {
 		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
 	}
+	observation, err := validateAgentObservationDecision(observationDecision)
+	if err != nil {
+		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
+	}
+	observation.ToolResult = result
 	observation = e.normalizeObservationForAction(action, observation)
 	if err := e.emitStepCompleteEvent(stepIndex, observation.Summary); err != nil {
 		return domain.Action{}, domain.Observation{}, domain.VerificationResult{}, err
@@ -393,6 +447,41 @@ func tokenizeKeywords(text string) []string {
 	return keywords
 }
 
+func (e Engine) hasRequiredDependencies() bool {
+	if e.Tools == nil || e.Memory == nil || e.Sessions == nil || e.Verifier == nil {
+		return false
+	}
+	return e.Model != nil || e.AgentStrategies != nil
+}
+
+func (e Engine) resolveAgentStrategy() (AgentStrategyPlugin, error) {
+	registry := e.AgentStrategies
+	if registry == nil {
+		registry = NewAgentStrategyRegistry()
+		if err := registry.Register(BuiltinAgentStrategyHostDefault, func() (AgentStrategyPlugin, error) {
+			if e.Model == nil {
+				return nil, errors.New("runtime engine requires model for built-in agent strategy")
+			}
+			return newBuiltinModelAgentStrategy(e.Model), nil
+		}); err != nil {
+			return nil, err
+		}
+	} else {
+		registry = registry.Clone()
+		if _, ok := registry.Get(BuiltinAgentStrategyHostDefault); !ok {
+			if err := registry.Register(BuiltinAgentStrategyHostDefault, func() (AgentStrategyPlugin, error) {
+				if e.Model == nil {
+					return nil, errors.New("runtime engine requires model for built-in agent strategy")
+				}
+				return newBuiltinModelAgentStrategy(e.Model), nil
+			}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return registry.Resolve(e.AgentStrategyID)
+}
+
 func (e Engine) listToolInfo() []domain.ToolInfo {
 	provider, ok := e.Tools.(toolExecutorWithRegistry)
 	if !ok {
@@ -481,4 +570,58 @@ func (e Engine) emitEvent(event domain.StreamingEvent) error {
 		return nil
 	}
 	return e.EventChannel.Emit(event)
+}
+
+func verifierProvenanceFromEngine(verifier domain.Verifier) *domain.PluginMetadata {
+	carrier, ok := verifier.(verifierProvenanceCarrier)
+	if !ok || carrier == nil {
+		return nil
+	}
+	return carrier.VerifierProvenance()
+}
+
+func providerProvenanceFromModel(model domain.Model) *domain.PluginMetadata {
+	carrier, ok := model.(providerProvenanceCarrier)
+	if !ok || carrier == nil {
+		return nil
+	}
+	return carrier.ProviderProvenance()
+}
+
+func agentStrategyMetadata(strategy AgentStrategyPlugin) *domain.PluginMetadata {
+	carrier, ok := strategy.(agentStrategyMetadataCarrier)
+	if !ok || carrier == nil {
+		return nil
+	}
+	metadata := carrier.Metadata().Normalize()
+	if err := metadata.Validate(); err != nil {
+		return nil
+	}
+	if metadata.Family == domain.PluginFamilyAgentStrategy && metadata.LogicalID == BuiltinAgentStrategyHostDefault && metadata.ExecutionMode == domain.PluginExecutionModeNative && metadata.SourcePath == "builtin://runtime/model" {
+		return nil
+	}
+	return &metadata
+}
+
+func mergeProvenance(existing *domain.Provenance, metadata domain.PluginMetadata) *domain.Provenance {
+	normalized := metadata.Normalize()
+	if err := normalized.Validate(); err != nil {
+		return existing
+	}
+	plugins := make([]domain.PluginMetadata, 0, 1)
+	if existing != nil {
+		plugins = append(plugins, existing.Normalize().Plugins...)
+		for _, current := range plugins {
+			if current.Family == normalized.Family && current.LogicalID == normalized.LogicalID {
+				copyExisting := existing.Normalize()
+				return &copyExisting
+			}
+		}
+	}
+	plugins = append(plugins, normalized)
+	merged := domain.Provenance{Plugins: plugins}.Normalize()
+	if err := merged.Validate(); err != nil {
+		return existing
+	}
+	return &merged
 }

@@ -18,6 +18,10 @@ type ModelAdapter struct {
 	systemPrompt string
 }
 
+type providerMetadataCarrier interface {
+	Metadata() domain.PluginMetadata
+}
+
 type planResponse struct {
 	Summary string   `json:"summary"`
 	Steps   []string `json:"steps"`
@@ -45,6 +49,24 @@ type observationResponse struct {
 func NewModelAdapter(provider llm.Provider) *ModelAdapter {
 	systemPrompt, _ := prompts.SystemPrompt(prompts.DefaultSystemPromptVersion)
 	return &ModelAdapter{provider: provider, systemPrompt: strings.TrimSpace(systemPrompt)}
+}
+
+func (m *ModelAdapter) ProviderProvenance() *domain.PluginMetadata {
+	if m == nil || m.provider == nil {
+		return nil
+	}
+	carrier, ok := m.provider.(providerMetadataCarrier)
+	if !ok {
+		return nil
+	}
+	metadata := carrier.Metadata().Normalize()
+	if err := metadata.Validate(); err != nil {
+		return nil
+	}
+	if strings.HasPrefix(metadata.SourcePath, "builtin://") {
+		return nil
+	}
+	return &metadata
 }
 
 func (m *ModelAdapter) CreatePlan(ctx context.Context, task domain.Task, session domain.Session, memory []domain.MemoryEntry) (domain.Plan, error) {
