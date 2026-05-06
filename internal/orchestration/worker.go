@@ -217,6 +217,9 @@ func (w *WorkerAgent) captureSuccess(subtask Subtask, session domain.Session, st
 }
 
 func (w *WorkerAgent) fail(subtask Subtask, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		err = context.Canceled
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.Status = SubtaskStatusFailed

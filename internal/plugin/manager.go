@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 
+	"zheng-harness/internal/domain"
+	"zheng-harness/internal/llm"
 	"zheng-harness/internal/tools"
 )
 
@@ -32,6 +34,9 @@ type DiscoveredPlugin struct {
 type PluginManager struct {
 	DiscoveryPath string
 	Policy        tools.SafetyPolicy
+	Providers     *ProviderRegistry
+	Verifiers     *VerifierRegistry
+	AgentStrategies *AgentStrategyRegistry
 
 	mu            sync.RWMutex
 	LoadedPlugins map[string]PluginTool
@@ -46,7 +51,44 @@ func NewManager(discoveryPath string) *PluginManager {
 	return &PluginManager{
 		DiscoveryPath: discoveryPath,
 		LoadedPlugins: make(map[string]PluginTool),
+		Providers:     NewProviderRegistry(),
+		Verifiers:     NewVerifierRegistry(),
+		AgentStrategies: NewAgentStrategyRegistry(),
 	}
+}
+
+func init() {
+	llm.SetDefaultProviderResolver(defaultLLMProviderResolver{})
+}
+
+// ResolveProvider applies host-owned provider selection rules.
+func (m *PluginManager) ResolveProvider(id string, cfg llm.ProviderConfig) (llm.Provider, error) {
+	if m == nil || m.Providers == nil {
+		return nil, fmt.Errorf("%w: provider registry is nil", ErrRegistryEntryNotFound)
+	}
+	return m.Providers.Resolve(id, cfg)
+}
+
+type defaultLLMProviderResolver struct{}
+
+func (defaultLLMProviderResolver) Resolve(id string, cfg llm.ProviderConfig) (llm.Provider, error) {
+	return NewManager("").ResolveProvider(id, cfg)
+}
+
+// ResolveVerifier applies host-owned verifier selection rules.
+func (m *PluginManager) ResolveVerifier(id, mode string, executor domain.ToolExecutor) (domain.Verifier, error) {
+	if m == nil || m.Verifiers == nil {
+		return nil, fmt.Errorf("%w: verifier registry is nil", ErrRegistryEntryNotFound)
+	}
+	return m.Verifiers.Resolve(id, mode, executor)
+}
+
+// ResolveAgentStrategy applies host-owned agent strategy selection rules.
+func (m *PluginManager) ResolveAgentStrategy(id string) (AgentStrategy, error) {
+	if m == nil || m.AgentStrategies == nil {
+		return nil, fmt.Errorf("%w: agent strategy registry is nil", ErrRegistryEntryNotFound)
+	}
+	return m.AgentStrategies.Resolve(id)
 }
 
 // Discover scans the configured plugin directory and classifies plugin artifacts.

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"zheng-harness/internal/domain"
+	runtimeengine "zheng-harness/internal/runtime"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -65,6 +66,31 @@ type terminableWorker interface {
 	Terminate()
 }
 
+type agentStrategyWorkerSelector interface {
+	SelectWorker(ctx context.Context, input AgentStrategyWorkerSelection) (AgentStrategyWorkerDecision, error)
+}
+
+type AgentStrategyWorkerSelection struct {
+	Subtask       Subtask
+	Decomposition TaskDecomposition
+	MaxWorkers    int
+	ActiveWorkers int
+}
+
+type AgentStrategyWorkerDecision struct {
+	Worker        Worker
+	SpawnSubtasks []Subtask
+}
+
+var ErrRecursiveWorkerSpawnNotAllowed = errors.New("agent strategy attempted recursive worker spawn")
+
+func (d AgentStrategyWorkerDecision) Validate() error {
+	if len(d.SpawnSubtasks) > 0 {
+		return ErrRecursiveWorkerSpawnNotAllowed
+	}
+	return nil
+}
+
 // Orchestrator coordinates bounded concurrent worker execution for decompositions.
 type Orchestrator struct {
 	MaxWorkers    int
@@ -72,10 +98,13 @@ type Orchestrator struct {
 	TaskChannel   chan TaskDecomposition
 	ResultChannel chan WorkerResult
 	WorkerFactory WorkerFactory
+	AgentStrategies *runtimeengine.AgentStrategyRegistry
+	AgentStrategyID string
 
 	errgroup *errgroup.Group
 	ctx      context.Context
 	cancel   context.CancelFunc
+	strategy runtimeengine.AgentStrategyPlugin
 
 	mu      sync.Mutex
 	started bool
@@ -105,6 +134,10 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	if o.WorkerFactory == nil {
 		return errors.New("orchestrator worker factory is required")
 	}
+	strategy, err := o.resolveAgentStrategy()
+	if err != nil {
+		return err
+	}
 	if o.MaxWorkers <= 0 {
 		o.MaxWorkers = defaultMaxWorkers
 	}
@@ -120,6 +153,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	o.ctx, o.cancel = context.WithCancel(ctx)
 	o.errgroup, o.ctx = errgroup.WithContext(o.ctx)
+	o.strategy = strategy
 	o.errgroup.Go(func() error {
 		defer o.closeResultChannel()
 		for {
@@ -278,7 +312,12 @@ func (o *Orchestrator) executeDecomposition(ctx context.Context, decomposition T
 }
 
 func (o *Orchestrator) runWorker(ctx context.Context, decomposition TaskDecomposition, subtask Subtask) WorkerResult {
-	worker := o.WorkerFactory(subtask)
+	worker, err := o.selectWorker(ctx, decomposition, subtask)
+	if err != nil {
+		result := WorkerResult{TaskID: decomposition.TaskID, SubtaskID: subtask.ID, Status: SubtaskStatusFailed, Err: err, WorkerTerminated: true}
+		o.publishWorkerResult(ctx, nil, result)
+		return result
+	}
 	if worker == nil {
 		result := WorkerResult{TaskID: decomposition.TaskID, SubtaskID: subtask.ID, Status: SubtaskStatusFailed, Err: fmt.Errorf("worker factory returned nil for subtask %q", subtask.ID), WorkerTerminated: true}
 		o.publishWorkerResult(ctx, worker, result)
@@ -318,6 +357,76 @@ func (o *Orchestrator) runWorker(ctx context.Context, decomposition TaskDecompos
 	result = mergeReportedWorkerResult(worker, result)
 	o.publishWorkerResult(ctx, worker, result)
 	return result
+}
+
+func (o *Orchestrator) selectWorker(ctx context.Context, decomposition TaskDecomposition, subtask Subtask) (Worker, error) {
+	if selector, ok := o.strategy.(agentStrategyWorkerSelector); ok {
+		decision, err := selector.SelectWorker(ctx, AgentStrategyWorkerSelection{
+			Subtask:       subtask,
+			Decomposition: decomposition,
+			MaxWorkers:    o.MaxWorkers,
+			ActiveWorkers: o.activeWorkerCount(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := decision.Validate(); err != nil {
+			return nil, err
+		}
+		if decision.Worker != nil {
+			return decision.Worker, nil
+		}
+	}
+	return o.WorkerFactory(subtask), nil
+}
+
+func (o *Orchestrator) resolveAgentStrategy() (runtimeengine.AgentStrategyPlugin, error) {
+	registry := o.AgentStrategies
+	if registry == nil {
+		registry = runtimeengine.NewAgentStrategyRegistry()
+	} else {
+		registry = registry.Clone()
+	}
+	if _, ok := registry.Get(runtimeengine.BuiltinAgentStrategyHostDefault); !ok {
+		if err := registry.Register(runtimeengine.BuiltinAgentStrategyHostDefault, func() (runtimeengine.AgentStrategyPlugin, error) {
+			return orchestrationBuiltinAgentStrategy{}, nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return registry.Resolve(o.AgentStrategyID)
+}
+
+func (o *Orchestrator) activeWorkerCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.Workers)
+}
+
+type orchestrationBuiltinAgentStrategy struct{}
+
+func (orchestrationBuiltinAgentStrategy) Metadata() domain.PluginMetadata {
+	return domain.PluginMetadata{
+		Family:                domain.PluginFamilyAgentStrategy,
+		LogicalID:             runtimeengine.BuiltinAgentStrategyHostDefault,
+		DisplayName:           "Host Default Orchestration Strategy",
+		ContractVersion:       runtimeengine.AgentStrategyPluginContractVersion,
+		ImplementationVersion: "1.0.0",
+		ExecutionMode:         domain.PluginExecutionModeNative,
+		SourcePath:            "builtin://orchestration/default",
+	}
+}
+
+func (orchestrationBuiltinAgentStrategy) CreatePlan(context.Context, runtimeengine.AgentPlanContext) (runtimeengine.AgentPlanDecision, error) {
+	return runtimeengine.AgentPlanDecision{}, nil
+}
+
+func (orchestrationBuiltinAgentStrategy) NextAction(context.Context, runtimeengine.AgentActionContext) (runtimeengine.AgentActionDecision, error) {
+	return runtimeengine.AgentActionDecision{}, nil
+}
+
+func (orchestrationBuiltinAgentStrategy) Observe(context.Context, runtimeengine.AgentObservationContext) (runtimeengine.AgentObservationDecision, error) {
+	return runtimeengine.AgentObservationDecision{}, nil
 }
 
 func mergeReportedWorkerResult(worker Worker, fallback WorkerResult) WorkerResult {
