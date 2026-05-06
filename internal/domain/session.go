@@ -18,9 +18,10 @@ const (
 
 // Session 跟踪任务的一次运行时尝试。
 type Session struct {
-	ID        string
-	TaskID    string
-	Status    SessionStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         string
+	TaskID     string
+	Status     SessionStatus
+	Provenance *Provenance
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }

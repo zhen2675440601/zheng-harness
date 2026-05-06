@@ -6,4 +6,5 @@ type Step struct {
 	Action       Action
 	Observation  Observation
 	Verification VerificationResult
+	Provenance   *Provenance
 }
