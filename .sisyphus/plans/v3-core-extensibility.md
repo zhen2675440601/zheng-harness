@@ -123,7 +123,7 @@ Wave 5: Integration, persistence provenance, CLI/config, docs
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] T1. Write ADR for v3 extensibility boundaries and family contracts
+- [x] T1. Write ADR for v3 extensibility boundaries and family contracts
 
   **What to do**:
   1. Create a new ADR that formalizes v3 scope: provider plugins, strategy-style agent plugins, and verifier plugins only.
@@ -170,100 +170,9 @@ Wave 5: Integration, persistence provenance, CLI/config, docs
 
   **Commit**: YES | Message: `docs(adr): define v3 extensibility boundaries` | Files: `docs/ADR-*.md`
 
-- [ ] T2. Introduce shared plugin metadata and provenance model
-
-  **What to do**:
-  1. Define host-owned metadata types for plugin family, logical ID, display name, contract version, implementation version, execution mode, and source path.
-  2. Add provenance structures that can be attached to session/step records without requiring live plugin availability during inspect.
-  3. Add serialization helpers and validation for known plugin families: tool, provider, verifier, agent_strategy.
-  4. Keep the model additive so existing persisted sessions remain readable.
-  5. Add tests that prove provenance objects round-trip cleanly and reject unknown/invalid family values.
-
-  **Must NOT do**: Do not migrate runtime selection yet. Do not add marketplace metadata such as signatures, remote URLs, or update channels.
-
-  **Recommended Agent Profile**:
-  - Category: `deep` - Reason: Shared metadata influences llm, runtime, store, inspect, and plugin management.
-  - Skills: [] - No special skill required.
-  - Omitted: [`playwright`] - Not applicable.
-
-  **Parallelization**: Can Parallel: YES | Wave 1 | Blocks: T5, T6, T8, T11, T12 | Blocked By: T1
-
-  **References**:
-  - Pattern: `internal/plugin/manager.go:25-42` - Existing discovered/loaded plugin tracking concepts.
-  - Pattern: `internal/domain/session.go` - Session persistence shape to extend additively.
-  - Pattern: `internal/domain/step.go` - Step history model for per-execution provenance.
-  - Reference: `README.md` inspect/resume continuity section - persisted history must stay readable.
-
-  **Acceptance Criteria**:
-  - [ ] Shared metadata/provenance types exist with validation for family, execution mode, and contract version fields.
-  - [ ] Unknown plugin family or malformed version metadata is rejected by tests.
-  - [ ] Existing persisted sessions remain decodable without mandatory plugin provenance fields.
-  - [ ] `go test ./internal/... -run TestPluginProvenance` passes.
-
-  **QA Scenarios**:
-  ```
-  Scenario: Provenance round-trip for valid plugin-backed execution
-    Tool: Bash
-    Steps: Run `go test ./internal/... -run TestPluginProvenanceRoundTrip -v`
-    Expected: Test passes and proves encode/decode retains family, ID, mode, versions, and path
-    Evidence: .sisyphus/evidence/task-2-provenance-roundtrip.txt
-
-  Scenario: Reject malformed provenance metadata
-    Tool: Bash
-    Steps: Run `go test ./internal/... -run TestPluginProvenanceRejectsInvalid -v`
-    Expected: Test passes by rejecting invalid family/mode/version values deterministically
-    Evidence: .sisyphus/evidence/task-2-provenance-invalid.txt
-  ```
-
-  **Commit**: YES | Message: `feat(plugin): add shared provenance metadata model` | Files: `internal/domain/*, internal/plugin/*, internal/store/*`
-
-- [ ] T3. Build host-owned registry and selection rules for extensibility families
-
-  **What to do**:
-  1. Design and implement host-owned registries for provider, verifier, and agent strategy families with explicit namespace ownership.
-  2. Define deterministic collision policy: duplicate IDs between built-ins and plugins are rejected unless explicitly namespaced by host rules.
-  3. Define selection precedence and lookup APIs used by runtime/config/CLI.
-  4. Preserve built-ins as always-registered defaults even when no plugin directory exists.
-  5. Add concurrency-safe tests for registry registration, lookup, duplicate rejection, and family separation.
-
-  **Must NOT do**: Do not let plugins self-register global routing authority. Do not hide family-specific behavior behind an over-generic registry API that erases contract differences.
-
-  **Recommended Agent Profile**:
-  - Category: `deep` - Reason: This is the core host-control boundary for all later tasks.
-  - Skills: [] - No special skill required.
-  - Omitted: [`playwright`] - Not applicable.
-
-  **Parallelization**: Can Parallel: YES | Wave 1 | Blocks: T5, T8, T11, T12 | Blocked By: T1
-
-  **References**:
-  - Pattern: `internal/plugin/manager.go:31-50` - Existing manager state ownership and mutex discipline.
-  - Reference: `internal/llm/provider.go:41-65` - Current hardcoded provider selection that must move behind registry.
-  - Reference: `internal/verify/task_aware_verifier.go:33-40` - Current hardcoded verifier strategy map.
-
-  **Acceptance Criteria**:
-  - [ ] Family-specific registries exist and are concurrency-safe.
-  - [ ] Duplicate logical IDs are rejected deterministically with test coverage.
-  - [ ] Built-ins are present by default without plugin discovery.
-  - [ ] Selection precedence is documented in code comments/tests and consumed by callers via host APIs.
-
-  **QA Scenarios**:
-  ```
-  Scenario: Built-ins remain available with zero plugins installed
-    Tool: Bash
-    Steps: Run `go test ./internal/... -run TestRegistryBuiltinsAvailableWithoutPlugins -v`
-    Expected: Test passes; registry resolves built-in provider/verifier/agent strategy IDs without discovery path
-    Evidence: .sisyphus/evidence/task-3-builtins.txt
-
-  Scenario: Duplicate plugin ID collision is rejected
-    Tool: Bash
-    Steps: Run `go test ./internal/... -run TestRegistryRejectsDuplicateIDs -v`
-    Expected: Test passes with deterministic collision error and no partial registration
-    Evidence: .sisyphus/evidence/task-3-collision.txt
-  ```
-
-  **Commit**: YES | Message: `feat(plugin): add host-owned family registries` | Files: `internal/plugin/*, internal/llm/*, internal/verify/*, internal/runtime/*`
-
-- [ ] T4. Add fail-closed lifecycle, capability validation, and collision policy test harness
+- [x] T2. Introduce shared plugin metadata and provenance model
+- [x] T3. Build host-owned registry and selection rules for extensibility families
+- [x] T4. Add fail-closed lifecycle, capability validation, and collision policy test harness
 
   **What to do**:
   1. Extend host-side plugin management tests to cover provider/verifier/agent strategy family loading failure modes.
@@ -309,102 +218,9 @@ Wave 5: Integration, persistence provenance, CLI/config, docs
 
   **Commit**: YES | Message: `test(plugin): enforce fail-closed lifecycle semantics` | Files: `internal/plugin/*_test.go, internal/plugin/testdata/*`
 
-- [ ] T5. Introduce provider plugin contract and migrate built-in providers behind the seam
-
-  **What to do**:
-  1. Define a provider-family contract that extends the current host-facing provider/model boundary without surrendering runtime ownership.
-  2. Refactor `internal/llm.NewProvider` hardcoded switch logic behind a host-owned provider registry.
-  3. Register existing OpenAI, Anthropic, and DashScope implementations as built-ins through the same public seam used for plugin-backed providers.
-  4. Preserve current streaming/generate behavior and provider config defaults.
-  5. Add TDD coverage proving built-ins resolve through the new seam and unsupported provider IDs fail deterministically.
-
-  **Must NOT do**: Do not add new provider integrations. Do not let provider plugins replace runtime planning/execution ownership. Do not break existing config defaults.
-
-  **Recommended Agent Profile**:
-  - Category: `deep` - Reason: Provider selection sits on a hot path crossing config, llm, runtime, and streaming behavior.
-  - Skills: [] - No special skill required.
-  - Omitted: [`playwright`] - Not applicable.
-
-  **Parallelization**: Can Parallel: YES | Wave 2 | Blocks: T6, T7, T12 | Blocked By: T2, T3, T4
-
-  **References**:
-  - API/Type: `internal/llm/provider.go:24-65` - Current Provider interface and hardcoded constructor path.
-  - API/Type: `internal/domain/ports.go:5-10` - Host-facing `domain.Model` seam that runtime depends on.
-  - Pattern: `internal/llm/openai.go` - Existing built-in provider registration candidate.
-  - Pattern: `internal/llm/anthropic.go` - Existing built-in provider registration candidate.
-  - Pattern: `internal/llm/dashscope.go` - Existing built-in provider registration candidate.
-
-  **Acceptance Criteria**:
-  - [ ] Built-in providers register and resolve through host-owned provider registry.
-  - [ ] Existing config-backed provider selection still works unchanged for built-in provider IDs.
-  - [ ] Unsupported provider IDs fail deterministically with tests.
-  - [ ] Streaming and non-streaming provider behavior remains green under existing tests.
-
-  **QA Scenarios**:
-  ```
-  Scenario: Built-in provider resolves through plugin seam
-    Tool: Bash
-    Steps: Run `go test ./internal/llm/... -run TestProviderPluginBuiltinsUseRegistry -v`
-    Expected: Test passes; built-in provider selection flows through registry-based seam instead of direct switch-only path
-    Evidence: .sisyphus/evidence/task-5-provider-builtins.txt
-
-  Scenario: Unknown provider ID fails deterministically
-    Tool: Bash
-    Steps: Run `go test ./internal/llm/... -run TestProviderPluginRejectsUnknownID -v`
-    Expected: Test passes with stable unsupported-provider error and no panic
-    Evidence: .sisyphus/evidence/task-5-provider-unknown.txt
-  ```
-
-  **Commit**: YES | Message: `feat(llm): add provider registry seam` | Files: `internal/llm/*, internal/plugin/*, internal/config/*`
-
-- [ ] T6. Integrate provider plugin loading modes and contract validation
-
-  **What to do**:
-  1. Extend plugin loading for provider family artifacts using the host-owned metadata, contract validation, and fail-closed rules.
-  2. Support the canonical external-process path first; keep native mode optional where the existing plugin infrastructure already supports it.
-  3. Ensure provider plugin metadata exposes implementation version, contract version, logical ID, and execution mode for provenance capture.
-  4. Add tests for startup failure, version mismatch, malformed responses, and unsupported mode behavior.
-  5. Keep built-in providers available even when plugin discovery is disabled or empty.
-
-  **Must NOT do**: Do not require native plugin parity on Windows. Do not auto-install or auto-discover from untrusted locations.
-
-  **Recommended Agent Profile**:
-  - Category: `deep` - Reason: This task expands current tool-only loader assumptions into provider-family semantics.
-  - Skills: [] - No special skill required.
-  - Omitted: [`playwright`] - Not applicable.
-
-  **Parallelization**: Can Parallel: YES | Wave 2 | Blocks: T7, T12 | Blocked By: T2, T3, T4, T5
-
-  **References**:
-  - Pattern: `internal/plugin/manager.go:52-128` - Discovery + load + validate flow.
-  - Pattern: `internal/plugin/external.go` - External-process plugin loading baseline.
-  - Pattern: `internal/plugin/native.go` - Native plugin loading constraints.
-  - Reference: `.sisyphus/plans/v2-evolution.md:29-31` - External-process portability baseline.
-
-  **Acceptance Criteria**:
-  - [ ] Provider-family plugin artifacts validate contract version and metadata before registration.
-  - [ ] External-process provider plugin loading path is covered by tests.
-  - [ ] Unsupported native mode/platform behavior is deterministic and tested.
-  - [ ] Built-ins remain available when provider plugin discovery fails or is disabled.
-
-  **QA Scenarios**:
-  ```
-  Scenario: External-process provider plugin loads successfully
-    Tool: Bash
-    Steps: Run `go test ./internal/plugin/... -run TestProviderExternalPluginLoad -v`
-    Expected: Test passes; provider plugin loads, validates, and registers with provenance metadata
-    Evidence: .sisyphus/evidence/task-6-provider-external.txt
-
-  Scenario: Unsupported provider native mode fails deterministically
-    Tool: Bash
-    Steps: Run `go test ./internal/plugin/... -run TestProviderNativePluginUnsupportedMode -v`
-    Expected: Test passes with stable unsupported-mode error and no partial registration
-    Evidence: .sisyphus/evidence/task-6-provider-native-unsupported.txt
-  ```
-
-  **Commit**: YES | Message: `feat(plugin): support provider plugin loading` | Files: `internal/plugin/*, internal/llm/*`
-
-- [ ] T7. Preserve provider config and CLI selection compatibility
+- [x] T5. Introduce provider plugin contract and migrate built-in providers behind the seam
+- [x] T6. Integrate provider plugin loading modes and contract validation
+- [x] T7. Preserve provider config and CLI selection compatibility
 
   **What to do**:
   1. Keep current config behavior for built-in provider selection fully compatible.
@@ -450,100 +266,9 @@ Wave 5: Integration, persistence provenance, CLI/config, docs
 
   **Commit**: YES | Message: `feat(cmd): preserve provider selection compatibility` | Files: `cmd/agent/*, internal/config/*, README.md, docs/USAGE.md`
 
-- [ ] T8. Define verifier plugin contract and predeclared policy registry
-
-  **What to do**:
-  1. Define a verifier-family contract that returns host-validated verification results matching the existing domain schema.
-  2. Preserve host ownership of valid policy names; plugin verifiers may bind only to predeclared policies.
-  3. Add a verifier registry that maps policy identifiers to built-in or plugin-backed implementations with explicit precedence rules.
-  4. Register current command/evidence/state-output verifier strategies through the new seam.
-  5. Add tests proving unknown policy bindings are rejected and built-in policies remain available with zero plugins installed.
-
-  **Must NOT do**: Do not allow plugins to invent arbitrary policy names. Do not let verifier plugins declare final trust without host schema validation.
-
-  **Recommended Agent Profile**:
-  - Category: `deep` - Reason: Verification authority is a core trust boundary and must remain host-controlled.
-  - Skills: [] - No special skill required.
-  - Omitted: [`playwright`] - Not applicable.
-
-  **Parallelization**: Can Parallel: YES | Wave 3 | Blocks: T9, T10, T12 | Blocked By: T2, T3, T4
-
-  **References**:
-  - API/Type: `internal/domain/ports.go:30-32` - `domain.Verifier` interface.
-  - Pattern: `internal/verify/task_aware_verifier.go:11-40` - Current policy map and dispatch behavior.
-  - Pattern: `internal/verify/command_verifier.go` - Existing built-in policy implementation.
-  - Pattern: `internal/verify/noncoding_verifier.go` - Existing evidence/state-output verification implementations.
-
-  **Acceptance Criteria**:
-  - [ ] Verifier registry supports only host-predeclared policy names.
-  - [ ] Existing built-in verification strategies register via the new seam.
-  - [ ] Unknown or unauthorized policy bindings are rejected with tests.
-  - [ ] Zero-plugin operation still resolves current built-in policies.
-
-  **QA Scenarios**:
-  ```
-  Scenario: Built-in verifier policies resolve through registry
-    Tool: Bash
-    Steps: Run `go test ./internal/verify/... -run TestVerifierPluginBuiltinsUseRegistry -v`
-    Expected: Test passes; command/evidence/state-output policies resolve through host registry
-    Evidence: .sisyphus/evidence/task-8-verifier-builtins.txt
-
-  Scenario: Plugin cannot bind unknown policy name
-    Tool: Bash
-    Steps: Run `go test ./internal/verify/... -run TestVerifierPluginRejectsUnknownPolicyBinding -v`
-    Expected: Test passes with deterministic rejection error and no registration
-    Evidence: .sisyphus/evidence/task-8-verifier-policy-reject.txt
-  ```
-
-  **Commit**: YES | Message: `feat(verify): add verifier policy registry seam` | Files: `internal/verify/*, internal/plugin/*, internal/domain/*`
-
-- [ ] T9. Implement verifier plugin loading and host-side result validation
-
-  **What to do**:
-  1. Extend plugin loading for verifier family artifacts using the shared metadata/lifecycle rules.
-  2. Add host-side validation for plugin-produced verification results so malformed, incomplete, or contradictory outputs are rejected.
-  3. Ensure verifier plugins can participate only through predeclared policy IDs.
-  4. Add tests for malformed result schema, timeout/crash behavior, contract mismatch, and fail-closed selection.
-  5. Ensure plugin verifier errors preserve debuggable provenance in session/step context.
-
-  **Must NOT do**: Do not permit verifier plugins to bypass evidence expectations or silently mark success without host validation.
-
-  **Recommended Agent Profile**:
-  - Category: `deep` - Reason: Safety and trust semantics dominate this task.
-  - Skills: [] - No special skill required.
-  - Omitted: [`playwright`] - Not applicable.
-
-  **Parallelization**: Can Parallel: YES | Wave 3 | Blocks: T10, T12 | Blocked By: T8
-
-  **References**:
-  - Pattern: `internal/plugin/manager.go:88-127` - Contract validation and registration lifecycle.
-  - Pattern: `internal/domain/verification.go` - Result schema that host must validate.
-  - Pattern: `internal/verify/*_test.go` - Existing verification tests to extend.
-
-  **Acceptance Criteria**:
-  - [ ] Verifier plugins load only after metadata + contract validation.
-  - [ ] Host rejects malformed or incomplete verification results with tests.
-  - [ ] Timeout/crash behavior is deterministic and fail-closed.
-  - [ ] Provenance is attached to verifier execution for debugging/inspect.
-
-  **QA Scenarios**:
-  ```
-  Scenario: Malformed verifier plugin result is rejected
-    Tool: Bash
-    Steps: Run `go test ./internal/verify/... -run TestVerifierPluginRejectsMalformedResult -v`
-    Expected: Test passes; malformed plugin response is rejected and verification fails closed
-    Evidence: .sisyphus/evidence/task-9-verifier-malformed.txt
-
-  Scenario: Verifier plugin timeout fails closed
-    Tool: Bash
-    Steps: Run `go test ./internal/verify/... -run TestVerifierPluginTimeoutFailsClosed -v`
-    Expected: Test passes with deterministic timeout error and preserved provenance context
-    Evidence: .sisyphus/evidence/task-9-verifier-timeout.txt
-  ```
-
-  **Commit**: YES | Message: `feat(plugin): support verifier plugin loading` | Files: `internal/plugin/*, internal/verify/*`
-
-- [ ] T10. Migrate TaskAwareVerifier to host-dispatched registry-based selection
+- [x] T8. Define verifier plugin contract and predeclared policy registry
+- [x] T9. Implement verifier plugin loading and host-side result validation
+- [x] T10. Migrate TaskAwareVerifier to host-dispatched registry-based selection
 
   **What to do**:
   1. Refactor `TaskAwareVerifier` to select strategies through the host-owned verifier registry instead of the current hardcoded strategy map.
@@ -589,7 +314,7 @@ Wave 5: Integration, persistence provenance, CLI/config, docs
 
   **Commit**: YES | Message: `refactor(verify): dispatch task-aware verifier via registry` | Files: `internal/verify/*`
 
-- [ ] T11. Define strategy-style agent plugin contract with strict host control
+- [x] T11. Define strategy-style agent plugin contract with strict host control
 
   **What to do**:
   1. Define an agent-strategy contract that allows extension of planning/execution strategy while keeping orchestration, cancellation, persistence, and task graph authority in the host.
@@ -636,7 +361,7 @@ Wave 5: Integration, persistence provenance, CLI/config, docs
 
   **Commit**: YES | Message: `feat(runtime): define agent strategy plugin seam` | Files: `internal/runtime/*, internal/plugin/*, internal/domain/*`
 
-- [ ] T12. Persist plugin provenance and preserve inspect/resume behavior
+- [x] T12. Persist plugin provenance and preserve inspect/resume behavior
 
   **What to do**:
   1. Extend persistence models and stores so plugin-backed provider/verifier/agent executions record provenance additively.
@@ -683,7 +408,7 @@ Wave 5: Integration, persistence provenance, CLI/config, docs
 
   **Commit**: YES | Message: `feat(store): persist plugin execution provenance` | Files: `internal/store/*, internal/domain/*, cmd/agent/*`
 
-- [ ] T13. Integrate agent strategy plugins into runtime/orchestration without surrendering host authority
+- [x] T13. Integrate agent strategy plugins into runtime/orchestration without surrendering host authority
 
   **What to do**:
   1. Wire the agent strategy registry into runtime and orchestration selection points.
@@ -730,7 +455,7 @@ Wave 5: Integration, persistence provenance, CLI/config, docs
 
   **Commit**: YES | Message: `feat(orchestration): integrate agent strategy plugins` | Files: `internal/runtime/*, internal/orchestration/*, internal/plugin/*`
 
-- [ ] T14. Run end-to-end extensibility validation and update operator-facing docs
+- [x] T14. Run end-to-end extensibility validation and update operator-facing docs
 
   **What to do**:
   1. Add end-to-end tests that cover one provider path, one verifier path, and one agent-strategy path through the public extension seams.
@@ -781,10 +506,10 @@ Wave 5: Integration, persistence provenance, CLI/config, docs
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - Prefer one commit per completed task or tightly-coupled task pair within a wave.

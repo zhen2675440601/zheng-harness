@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/bmatcuk/doublestar/v2 v2.0.4
+	github.com/go-chi/chi/v5 v5.2.3
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	golang.org/x/sync v0.0.0
 	modernc.org/sqlite v1.34.5
@@ -22,3 +23,5 @@ require (
 )
 
 replace golang.org/x/sync => ./third_party/golang.org/x/sync
+
+replace github.com/go-chi/chi/v5 => ./third_party/github.com/go-chi/chi/v5

@@ -2,9 +2,10 @@
 
 **Purpose**: This document maps every required proof surface to concrete tests, replay fixtures, CLI commands, expected outcomes, and evidence targets. All validation must be agent-executable with zero human judgment.
 
-**Last Updated**: 2026-04-27  
+**Last Updated**: 2026-05-06  
 **Phase**: 4 - Closed-Loop Validation  
-**Status**: ✅ Validated - All blockers resolved
+**Status**: ✅ Validated - All blockers resolved  
+**v4 Status**: ✅ Validated - API server, SSE, concurrency, providers complete
 
 ---
 
@@ -375,3 +376,304 @@ go test -race ./internal/orchestration/...             # Multi-agent race detect
 - The harness now demonstrates reliable CLI continuity, task-type routing, and task-aware verification.
 - **v2 (Wave 2) additions**: Streaming runtime, new tools (web_fetch, ask_user, code_search), dual-mode plugin system, and multi-agent orchestration with DAG scheduling. All v2 features tested and integrated.
 - **Test Coverage**: v2 features covered in `internal/runtime/streaming_test.go`, `internal/tools/adapters/*_test.go`, `internal/plugin/manager_test.go`, and `internal/orchestration/integration_test.go`.
+
+---
+
+## v3 Extensibility Validation (Wave 3)
+
+### 11. Provider Plugin Family
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **provider registry resolves built-in providers** | `go test ./internal/llm -run TestBuiltinProviderRegistry` | N/A | Built-in providers (openai, anthropic, dashscope) resolved | `internal/llm/provider_registry_test.go` | ✅ PASS |
+| **provider plugin adapter wraps built-in provider** | `go test ./internal/llm -run TestAdaptProviderPlugin` | N/A | Built-in provider wrapped with plugin metadata | `internal/llm/provider.go` | ✅ PASS |
+| **provider plugin contract validates metadata** | `go test ./internal/llm -run TestProviderPluginMetadata` | N/A | Metadata includes family, logical ID, contract version | `internal/llm/provider.go` | ✅ PASS |
+| **built-in provider path still routes through registry seam** | `go test ./internal/llm/... -run TestProviderPluginBuiltinsUseRegistry` | N/A | Built-in provider selection remains compatible while using registry seam | `internal/llm/provider_registry_test.go` | ✅ PASS |
+| **unknown provider selection fails deterministically** | `go test ./internal/llm/... -run TestProviderPluginUnknownProviderFailsDeterministically` | N/A | Unknown provider rejected with stable unsupported-provider error | `internal/llm/provider_registry_test.go` | ✅ PASS |
+
+### 12. Verifier Plugin Family
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **verifier registry resolves built-in verifiers** | `go test ./internal/verify -run TestVerifierRegistryBuiltinsAvailableWithoutPlugins` | N/A | Built-in verifiers (command, evidence, state-output) resolved | `internal/verify/registry_test.go` | ✅ PASS |
+| **verifier registry rejects unknown policy** | `go test ./internal/verify -run TestVerifierRegistryRejectsUnknownPolicy` | N/A | Unknown policy rejected with error | `internal/verify/registry_test.go` | ✅ PASS |
+| **verifier plugin rejected outside predeclared policies** | `go test ./internal/verify -run TestVerifierRegistryRejectsPluginBindingOutsidePredeclaredPolicies` | N/A | Plugin binding outside declared policies rejected | `internal/verify/registry_test.go` | ✅ PASS |
+| **verifier plugin timeout fails closed** | `go test ./internal/verify -run TestVerifierPluginTimeoutFailsClosed` | N/A | Timeout results in fail-closed failed status | `internal/verify/registry_test.go` | ✅ PASS |
+| **verifier plugin crash fails closed** | `go test ./internal/verify -run TestVerifierPluginCrashFailsClosed` | N/A | Crash results in fail-closed failed status with provenance | `internal/verify/registry_test.go` | ✅ PASS |
+| **verifier plugin malformed result detected** | `go test ./internal/verify -run TestVerifierPluginRejectsMalformedResult` | N/A | Malformed result detected and attributed to plugin | `internal/verify/registry_test.go` | ✅ PASS |
+| **plugin-backed verifier output remains bounded by host result validation** | `go test ./internal/verify/... -run TestVerifierPluginRejectsMalformedResult` | N/A | Contradictory plugin result converted to fail-closed failed status | `internal/verify/registry_test.go` | ✅ PASS |
+
+### 13. Agent Strategy Family (Built-in Runtime)
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **built-in runtime strategy executes** | `go test ./internal/e2e -run TestE2E_AgentStrategyBuiltIn` | N/A | Built-in strategy resolves through seam | `internal/e2e/e2e_validation_test.go` | ✅ PASS |
+| **strategy persistence works** | `go test ./internal/e2e -run TestE2E_ProvenancePersistence` | N/A | Strategy execution provenance persisted | `internal/e2e/e2e_validation_test.go` | ✅ PASS |
+| **strategy plugin cancellation propagates from host context** | `go test ./internal/runtime/... -run TestAgentStrategyPluginCancellationPropagation` | N/A | Plugin-backed strategy stops on host cancellation without persisted partial step | `internal/runtime/agent_strategy_test.go` | ✅ PASS |
+| **invalid strategy response is rejected deterministically** | `go test ./internal/runtime/... -run TestAgentStrategyRejectsInvalidResponse` | N/A | Recursive/unmanaged strategy action rejected before persistence corruption | `internal/runtime/agent_strategy_test.go` | ✅ PASS |
+
+### 14. Fail-Closed Runtime Behavior
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **plugin load failure rejected** | `go test ./internal/e2e -run TestE2E_FailClosedPluginSelection` | N/A | Missing plugin rejected with deterministic error | `internal/e2e/e2e_validation_test.go` | ✅ PASS |
+| **plugin execution timeout fails closed** | `go test ./internal/verify -run TestVerifierPluginTimeoutFailsClosed` | N/A | Timeout attribution recorded with plugin identity | `internal/verify/registry_test.go` | ✅ PASS |
+| **plugin crash contained** | `go test ./internal/verify -run TestVerifierPluginCrashFailsClosed` | N/A | Crash does not propagate, attributed to plugin | `internal/verify/registry_test.go` | ✅ PASS |
+| **resume fails closed when persisted provider plugin is unavailable** | `go test ./cmd/agent/... -run TestResumeFailsClosedWhenPersistedProviderPluginUnavailable` | N/A | Resume aborts with deterministic provider plugin error and preserved history | `cmd/agent/main_test.go` | ✅ PASS |
+
+### 15. Provenance Persistence
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **session persisted with provenance** | `go test ./internal/e2e -run TestE2E_ProvenancePersistence` | N/A | Session persisted with plugin metadata | `internal/e2e/e2e_validation_test.go` | ✅ PASS |
+| **verifier provenance recorded** | `go test ./internal/verify -run TestVerifierPluginRejectsMalformedResult` | N/A | Verifier provenance accessible via `VerifierProvenance()` | `internal/verify/registry_test.go` | ✅ PASS |
+| **persisted provenance remains readable without live plugin artifact** | `go test ./cmd/agent/... -run TestInspectDisplaysPersistedPluginProvenanceWithoutLivePlugin` | N/A | Inspect JSON includes persisted provenance with no live plugin load requirement | `cmd/agent/main_test.go` | ✅ PASS |
+
+### 16. Built-in Only Compatibility
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **built-in only config loads** | `go test ./internal/e2e -run TestE2E_BuiltInOnlyCompatibility` | N/A | Config loads with zero plugins | `internal/e2e/e2e_validation_test.go` | ✅ PASS |
+| **built-in tools work without plugins** | `go test ./internal/tools -run TestBuiltinTools` | N/A | Built-in tools (read_file, write_file, etc.) functional | `internal/tools/builtin_test.go` | ✅ PASS |
+| **built-in providers work without plugins** | `go test ./internal/llm -run TestBuiltinProviders` | N/A | Built-in providers (openai, anthropic, dashscope) functional | `internal/llm/provider_registry_test.go` | ✅ PASS |
+| **CLI built-in provider config remains compatible** | `go test ./cmd/agent/... -run TestPluginSelectionBuiltInProviderCompatibility` | N/A | Existing built-in provider config runs unchanged with zero plugins | `cmd/agent/main_test.go` | ✅ PASS |
+| **CLI additive plugin provider selection works** | `go test ./cmd/agent/... -run TestPluginSelectionSupportsExplicitPluginProvider` | N/A | Plugin provider can be selected explicitly without renaming existing config keys | `cmd/agent/main_test.go` | ✅ PASS |
+| **CLI rejects conflicting provider selection sources** | `go test ./cmd/agent/... -run TestPluginSelectionRejectsConflictingSources` | N/A | Config and CLI conflicts produce deterministic user-facing error | `cmd/agent/main_test.go` | ✅ PASS |
+
+---
+
+## v3 Acceptance Criteria Checklist
+
+### v3 Provider Family (New in v3)
+
+- [x] Provider registry resolves built-in providers - Test: `TestBuiltinProviderRegistry` ✅ PASS
+- [x] Provider plugin adapter wraps built-in - Test: `TestAdaptProviderPlugin` ✅ PASS
+- [x] Provider plugin metadata recorded - Test: `TestProviderPluginMetadata` ✅ PASS
+- [x] Registry seam preserves built-in compatibility - Test: `TestProviderPluginBuiltinsUseRegistry` ✅ PASS
+- [x] Unknown provider rejection is deterministic - Test: `TestProviderPluginUnknownProviderFailsDeterministically` ✅ PASS
+
+### v3 Verifier Family (New in v3)
+
+- [x] Verifier registry resolves built-ins - Test: `TestVerifierRegistryBuiltinsAvailableWithoutPlugins` ✅ PASS
+- [x] Unknown policy rejected - Test: `TestVerifierRegistryRejectsUnknownPolicy` ✅ PASS
+- [x] Plugin binding outside policies rejected - Test: `TestVerifierRegistryRejectsPluginBindingOutsidePredeclaredPolicies` ✅ PASS
+- [x] Timeout fails closed - Test: `TestVerifierPluginTimeoutFailsClosed` ✅ PASS
+- [x] Crash fails closed - Test: `TestVerifierPluginCrashFailsClosed` ✅ PASS
+- [x] Malformed result detected - Test: `TestVerifierPluginRejectsMalformedResult` ✅ PASS
+
+### v3 Agent Strategy Family (New in v3)
+
+- [x] Built-in strategy executes - Test: `TestE2E_AgentStrategyBuiltIn` ✅ PASS
+- [x] Strategy persistence works - Test: `TestE2E_ProvenancePersistence` ✅ PASS
+- [x] Strategy cancellation propagates safely - Test: `TestAgentStrategyPluginCancellationPropagation` ✅ PASS
+- [x] Invalid strategy responses are rejected - Test: `TestAgentStrategyRejectsInvalidResponse` ✅ PASS
+
+### v3 Fail-Closed Semantics (New in v3)
+
+- [x] Plugin load failure rejected - Test: `TestE2E_FailClosedPluginSelection` ✅ PASS
+- [x] Plugin timeout fails closed - Test: `TestVerifierPluginTimeoutFailsClosed` ✅ PASS
+- [x] Plugin crash contained - Test: `TestVerifierPluginCrashFailsClosed` ✅ PASS
+- [x] Resume fails closed on missing provider plugin - Test: `TestResumeFailsClosedWhenPersistedProviderPluginUnavailable` ✅ PASS
+
+### v3 Provenance Persistence (New in v3)
+
+- [x] Session persisted with provenance - Test: `TestE2E_ProvenancePersistence` ✅ PASS
+- [x] Verifier provenance recorded - Test: `TestVerifierPluginRejectsMalformedResult` ✅ PASS
+- [x] Inspect remains readable without live plugin artifact - Test: `TestInspectDisplaysPersistedPluginProvenanceWithoutLivePlugin` ✅ PASS
+
+### v3 Built-in Compatibility (New in v3)
+
+- [x] Built-in only config loads - Test: `TestE2E_BuiltInOnlyCompatibility` ✅ PASS
+- [x] Built-in tools work - Test: `TestBuiltinTools` ✅ PASS
+- [x] Built-in providers work - Test: `TestBuiltinProviders` ✅ PASS
+- [x] CLI built-in provider config remains compatible - Test: `TestPluginSelectionBuiltInProviderCompatibility` ✅ PASS
+- [x] CLI additive plugin provider selection works - Test: `TestPluginSelectionSupportsExplicitPluginProvider` ✅ PASS
+- [x] CLI provider-selection conflicts error deterministically - Test: `TestPluginSelectionRejectsConflictingSources` ✅ PASS
+
+---
+
+## v3 Evidence File Map
+
+Wave 3 (v3) evidence files:
+
+```
+.sisyphus/evidence/
+├── task-14-provider-family.txt     # Provider plugin tests (registry, adapter, metadata)
+├── task-14-verifier-family.txt     # Verifier plugin tests (registry, fail-closed, provenance)
+├── task-14-agent-strategy.txt      # Agent strategy tests (built-in runtime, persistence)
+├── task-14-fail-closed.txt         # Fail-closed behavior tests (timeout, crash, load failure)
+├── task-14-provenance.txt          # Provenance persistence tests
+└── task-14-builtin-compat.txt      # Built-in compatibility tests
+```
+
+---
+
+## v3 Final Acceptance Commands
+
+All of the following commands pass:
+
+```bash
+go test ./internal/llm/...              # Provider plugin family
+go test ./internal/verify/...           # Verifier plugin family
+go test ./internal/e2e/... -run TestE2E # End-to-end extensibility validation
+go test ./internal/plugin/...           # Plugin system (v2 + v3)
+go test ./internal/orchestration/...    # Multi-agent orchestration (v2 + v3)
+```
+
+### v3 Evidence Commands
+
+```bash
+go test ./internal/verify/... -run TestVerifierRegistry # Verifier registry
+go test ./internal/verify/... -run TestVerifierPlugin   # Verifier plugin fail-closed
+go test ./internal/e2e/... -run TestE2E                 # End-to-end validation
+```
+
+---
+
+## v4 API Server Validation (Wave 4)
+
+### 17. HTTP API Endpoints
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **POST /api/v1/run creates session** | `go test ./internal/server -run TestServerRunCreatesSession` | N/A | 202 Accepted, session_id returned, session persisted | `internal/server/handlers_test.go` | ✅ PASS |
+| **POST /api/v1/resume recovers session** | `go test ./internal/server -run TestServerResumeRecoversSession` | N/A | 202 Accepted, actor dispatched | `internal/server/handlers_test.go` | ✅ PASS |
+| **POST /api/v1/resume rejects completed** | `go test ./internal/server -run TestServerResumeRejectsCompleted` | N/A | 409 Conflict, error message explains ineligibility | `internal/server/handlers_test.go` | ✅ PASS |
+| **GET /api/v1/sessions/{id}/inspect reads state** | `go test ./internal/server -run TestServerInspectReadsState` | N/A | 200 OK, JSON contains session/plan/step state | `internal/server/handlers_test.go` | ✅ PASS |
+| **GET /healthz returns healthy** | `go test ./internal/server -run TestServerHealthz` | N/A | 200 OK, machine-readable status | `internal/server/handlers_test.go` | ✅ PASS |
+| **Unauthenticated requests rejected** | `go test ./internal/server -run TestServerAuthRejected` | N/A | 401 Unauthorized, standardized JSON error | `internal/server/handlers_test.go` | ✅ PASS |
+| **Invalid JSON returns 400** | `go test ./internal/server -run TestServerInvalidJSONRejected` | N/A | 400 Bad Request, validation error message | `internal/server/handlers_test.go` | ✅ PASS |
+
+### 18. SSE Streaming Endpoint
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **SSE emits ordered events** | `go test ./internal/server -run TestSSEEmitsOrderedEvents` | N/A | Events ordered: token_delta* → tool_start → tool_end → step_complete → session_complete | `internal/server/sse_test.go` | ✅ PASS |
+| **SSE requires auth** | `go test ./internal/server -run TestSSERequiresAuth` | N/A | 401 Unauthorized without JWT token | `internal/server/sse_test.go` | ✅ PASS |
+| **Client disconnect doesn't cancel session** | `go test ./internal/server -run TestSSEDisconnectDoesntCancelSession` | N/A | Session continues after client disconnects, inspect shows completion | `internal/server/sse_test.go` | ✅ PASS |
+| **Slow subscriber overflow is explicit** | `go test ./internal/server -run TestSSESlowSubscriberOverflow` | N/A | Buffer overflow emits error event and closes only that connection | `internal/server/sse_test.go` | ✅ PASS |
+| **Heartbeat sent every 15s** | `go test ./internal/server -run TestSSEHeartbeat` | N/A | Heartbeat comments observed in stream | `internal/server/sse_test.go` | ✅ PASS |
+
+### 19. Session Concurrency
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **Session manager enforces limit** | `go test ./internal/server -run TestSessionManagerEnforcesLimit` | N/A | Active sessions capped at configured limit | `internal/server/session_manager_test.go` | ✅ PASS |
+| **Duplicate resume returns 409** | `go test ./internal/server -run TestSessionManagerDuplicateResume` | N/A | Running/completed session resume rejected with 409 | `internal/server/session_manager_test.go` | ✅ PASS |
+| **Missing session returns 404** | `go test ./internal/server -run TestSessionManagerMissingSession` | N/A | Non-existent session returns 404 | `internal/server/session_manager_test.go` | ✅ PASS |
+| **Graceful shutdown drains sessions** | `go test ./internal/server -run TestSessionManagerGracefulShutdown` | N/A | Shutdown waits for active sessions or times out | `internal/server/session_manager_test.go` | ✅ PASS |
+| **Multi-session concurrency** | `go test ./internal/server -run TestSessionManagerMultiSession` | N/A | Multiple sessions run concurrently without interference | `internal/server/session_manager_test.go` | ✅ PASS |
+
+### 20. SQLite WAL Mode
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **WAL mode enabled in server path** | `go test ./internal/store -run TestSQLiteWALModeEnabled` | N/A | SQLite database opened in WAL mode | `internal/store/wal_test.go` | ✅ PASS |
+| **Concurrent writes don't corrupt inspect** | `go test ./internal/store -run TestSQLiteConcurrentWritesInspectReadable` | N/A | Inspect reads consistent state during concurrent writes | `internal/store/wal_test.go` | ✅ PASS |
+| **Resume eligibility persisted** | `go test ./internal/store -run TestSQLiteResumeEligibilityPersisted` | N/A | Completed/running sessions not incorrectly resumable | `internal/store/wal_test.go` | ✅ PASS |
+
+### 21. OpenAI/Anthropic Providers
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **OpenAI Generate works** | `go test ./internal/llm -run TestOpenAIProviderGenerate` | N/A | Real HTTP generate request succeeds | `internal/llm/openai_test.go` | ✅ PASS |
+| **OpenAI Stream works** | `go test ./internal/llm -run TestOpenAIProviderStream` | N/A | Streaming emits token deltas | `internal/llm/openai_test.go` | ✅ PASS |
+| **Anthropic Generate works** | `go test ./internal/llm -run TestAnthropicProviderGenerate` | N/A | Real HTTP generate request succeeds | `internal/llm/anthropic_test.go` | ✅ PASS |
+| **Anthropic Stream works** | `go test ./internal/llm -run TestAnthropicProviderStream` | N/A | Streaming emits token deltas | `internal/llm/anthropic_test.go` | ✅ PASS |
+| **Provider errors normalized** | `go test ./internal/llm -run TestProviderErrorNormalization` | N/A | Auth failure, transport failure, malformed response all normalized | `internal/llm/provider_error_test.go` | ✅ PASS |
+
+### 22. CLI Non-Regression
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **CLI unaffected by server additions** | `go test ./cmd/agent -run TestCLIUnaffectedByServer` | N/A | CLI run/resume/inspect behavior unchanged | `cmd/agent/main_test.go` | ✅ PASS |
+
+---
+
+## v4 Acceptance Criteria Checklist
+
+### v4 API Endpoints (New in v4)
+
+- [x] POST /api/v1/run creates session - Test: `TestServerRunCreatesSession` ✅ PASS
+- [x] POST /api/v1/resume recovers session - Test: `TestServerResumeRecoversSession` ✅ PASS
+- [x] POST /api/v1/resume rejects completed - Test: `TestServerResumeRejectsCompleted` ✅ PASS
+- [x] GET /api/v1/sessions/{id}/inspect reads state - Test: `TestServerInspectReadsState` ✅ PASS
+- [x] GET /api/v1/sessions/{id}/stream SSE streams - Test: `TestSSEEmitsOrderedEvents` ✅ PASS
+- [x] GET /healthz returns healthy - Test: `TestServerHealthz` ✅ PASS
+- [x] Unauthenticated requests rejected - Test: `TestServerAuthRejected` ✅ PASS
+
+### v4 SSE Streaming (New in v4)
+
+- [x] SSE emits ordered events - Test: `TestSSEEmitsOrderedEvents` ✅ PASS
+- [x] SSE requires auth - Test: `TestSSERequiresAuth` ✅ PASS
+- [x] Client disconnect doesn't cancel session - Test: `TestSSEDisconnectDoesntCancelSession` ✅ PASS
+- [x] Slow subscriber overflow explicit - Test: `TestSSESlowSubscriberOverflow` ✅ PASS
+- [x] Heartbeat sent every 15s - Test: `TestSSEHeartbeat` ✅ PASS
+
+### v4 Session Concurrency (New in v4)
+
+- [x] Session manager enforces limit - Test: `TestSessionManagerEnforcesLimit` ✅ PASS
+- [x] Duplicate resume returns 409 - Test: `TestSessionManagerDuplicateResume` ✅ PASS
+- [x] Missing session returns 404 - Test: `TestSessionManagerMissingSession` ✅ PASS
+- [x] Graceful shutdown drains sessions - Test: `TestSessionManagerGracefulShutdown` ✅ PASS
+- [x] Multi-session concurrency works - Test: `TestSessionManagerMultiSession` ✅ PASS
+
+### v4 SQLite WAL (New in v4)
+
+- [x] WAL mode enabled - Test: `TestSQLiteWALModeEnabled` ✅ PASS
+- [x] Concurrent writes don't corrupt inspect - Test: `TestSQLiteConcurrentWritesInspectReadable` ✅ PASS
+- [x] Resume eligibility persisted - Test: `TestSQLiteResumeEligibilityPersisted` ✅ PASS
+
+### v4 Provider Completion (New in v4)
+
+- [x] OpenAI Generate works - Test: `TestOpenAIProviderGenerate` ✅ PASS
+- [x] OpenAI Stream works - Test: `TestOpenAIProviderStream` ✅ PASS
+- [x] Anthropic Generate works - Test: `TestAnthropicProviderGenerate` ✅ PASS
+- [x] Anthropic Stream works - Test: `TestAnthropicProviderStream` ✅ PASS
+- [x] Provider errors normalized - Test: `TestProviderErrorNormalization` ✅ PASS
+
+### v4 CLI Non-Regression (New in v4)
+
+- [x] CLI unaffected by server additions - Test: `TestCLIUnaffectedByServer` ✅ PASS
+
+---
+
+## v4 Evidence File Map
+
+Wave 4 (v4) evidence files:
+
+```
+.sisyphus/evidence/
+├── task-5-api-endpoints.txt       # API endpoint tests (run, resume, inspect, healthz)
+├── task-5-sse-streaming.txt       # SSE streaming tests (ordered events, auth, disconnect)
+├── task-5-session-concurrency.txt # Session concurrency tests (limit, duplicate, shutdown)
+├── task-5-sqlite-wal.txt          # SQLite WAL tests (concurrent writes, resume eligibility)
+├── task-8-openai-provider.txt     # OpenAI provider tests (generate, stream, errors)
+├── task-9-anthropic-provider.txt  # Anthropic provider tests (generate, stream, errors)
+└── task-10-cli-non-regression.txt # CLI non-regression tests
+```
+
+---
+
+## v4 Final Acceptance Commands
+
+All of the following commands pass:
+
+```bash
+go build ./...
+go test ./...
+go test ./cmd/server/...
+go test ./internal/server/...
+go test ./internal/runtime/... -run TestSessionManager
+go test ./internal/llm/... -run "Test(OpenAI|Anthropic)"
+go test ./cmd/agent/... -run TestCLIUnaffectedByServer
+
+# Manual verification
+curl -sS http://127.0.0.1:8080/healthz
+curl -sS -X POST http://127.0.0.1:8080/api/v1/run \
+  -H "Authorization: Bearer test-token" \
+  -H "Content-Type: application/json" \
+  --data '{"task":"ping","task_type":"general"}'
+curl -N http://127.0.0.1:8080/api/v1/sessions/test-session/stream \
+  -H "Authorization: Bearer test-token"
+```

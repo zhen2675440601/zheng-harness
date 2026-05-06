@@ -1,0 +1,3 @@
+- 2026-05-06 T2 extracted shared runtime assembly into `internal/runtimebuilder`, keeping CLI config precedence by routing run/resume through `runtimebuilder.LoadCLIConfig` and preserving FakeModel/FakeVerifier fallbacks via caller-supplied engine options.
+- Shared builder now owns store/executor/model/verifier/plugin wiring plus server-facing config normalization (`listen`, JWT secret source, active session cap, WAL toggle) without coupling server assembly to CLI stdout/stderr behavior.
+- SQLite store constructors now accept additive WAL options so future server bootstrap can enable concurrent-safe journal mode without changing existing CLI storage defaults.

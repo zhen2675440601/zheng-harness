@@ -1,0 +1,2 @@
+- 2026-04-30: `go test ./...` still fails in pre-existing orchestration tests (`TestWorkerAgentCancellation`, `TestIntegrationFullFlow`, `TestIntegrationMultiAgentWithPlugins`); targeted provenance tests and `go build ./...` pass for T2.
+- 2026-04-30: T13 uses orchestration-side worker selection validation to reject recursive plugin spawn requests deterministically with `ErrRecursiveWorkerSpawnNotAllowed`, preventing unmanaged worker trees while preserving partial result publication semantics.

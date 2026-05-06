@@ -6,9 +6,9 @@
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 规划中**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成**
 
-**已完成**: T1-T11 (11/11 核心任务) + Phase 3 T1-T12 + Phase 4 闭环验证 + v1/v2 发布准备
+**已完成**: T1-T11 (11/11 核心任务) + Phase 3 T1-T12 + Phase 4 闭环验证 + v1/v2/v3/v4 发布准备
 
 验证状态权威来源：[`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
@@ -56,30 +56,72 @@
 
 **v2 验证状态**: 所有 streaming、tools、plugins、orchestration 测试已通过，集成测试覆盖端到端场景。详见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
-## v3 规划中
+---
+
+## v3 ✅ 完成
 
 详见 [v3 Core Extensibility 计划](.sisyphus/plans/v3-core-extensibility.md):
 
-- **Provider 插件化**: 将 LLM Provider 选择从硬编码改为可插拔的 registry + loader
-- **Verifier 插件化**: 将验证策略从硬编码改为可插拔的 policy registry
-- **Agent Strategy 插件化**: 支持策略注入，保留 host 的编排/取消/持久化权威
-- **共享治理原语**: 发现、验证、碰撞处理、生命周期、fail-closed 选择语义
-- **持久化溯源**: 插件化执行的 provider/verifier/agent 记录 provenance，inspect/resume 仍可读
+- ✅ **Provider 插件化**: LLM Provider 选择从硬编码改为可插拔的 registry + loader
+- ✅ **Verifier 插件化**: 验证策略从硬编码改为可插拔的 policy registry
+- ✅ **Agent Strategy 插件化**: 支持策略注入，保留 host 的编排/取消/持久化权威
+- ✅ **共享治理原语**: 发现、验证、碰撞处理、生命周期、fail-closed 选择语义
+- ✅ **持久化溯源**: 插件化执行的 provider/verifier/agent 记录 provenance，inspect/resume 仍可读
 
-### v3 Must Have
-- 三种独立的扩展契约 (provider/verifier/agent strategy)
-- 内置实现保持可用且一等公民
-- Host 拥有 registry：发现、ID 命名空间、碰撞策略、选择优先级、生命周期、fallback 语义
-- Fail-closed: run/resume 选择失败时优雅降级，inspect 始终可读
-- 持久化 provenance: family, logical ID, execution mode, contract version, implementation version
-- TDD 实现
+### v3 验证状态
 
-### v3 Must NOT Have
-- NO 产品入口扩展 (web UI, HTTP API server, daemon)
-- NO 插件市场/远程安装/签名
-- NO 向量数据库/embedding/语义记忆扩展
-- NO 破坏性移除内置路径
-- NO 元抽象强制统一所有插件家族
+**v3 Must Have** (全部实现):
+- ✅ 三种独立的扩展契约 (provider/verifier/agent strategy)
+- ✅ 内置实现保持可用且一等公民
+- ✅ Host 拥有 registry：发现、ID 命名空间、碰撞策略、选择优先级、生命周期、fallback 语义
+- ✅ Fail-closed: run/resume 选择失败时优雅降级，inspect 始终可读
+- ✅ 持久化 provenance: family, logical ID, execution mode, contract version, implementation version
+- ✅ TDD 实现
+
+**v3 Must NOT Have** (全部遵守):
+- ✅ NO 产品入口扩展 (web UI, HTTP API server, daemon)
+- ✅ NO 插件市场/远程安装/签名
+- ✅ NO 向量数据库/embedding/语义记忆扩展
+- ✅ NO 破坏性移除内置路径
+- ✅ NO 元抽象强制统一所有插件家族
+
+**v3 验证状态**: 所有 provider/verifier/agent-strategy 插件家族测试已通过，fail-closed 语义、provenance 持久化、内置兼容性全部验证。详见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
+
+---
+
+## v4 ✅ 完成
+
+详见 [v4 API Server Productization 计划](.sisyphus/plans/v4-api-server-productization.md):
+
+- ✅ **HTTP API 服务器**: `cmd/server` 独立入口点，JWT 认证 REST 端点
+- ✅ **SSE 流式输出**: `GET /api/v1/sessions/{id}/stream` 输出 6 种运行时事件
+- ✅ **会话并发执行**: Session-Actor 架构，默认 8 个活跃会话上限
+- ✅ **OpenAI/Anthropic Provider**: 真实 HTTP-backed 实现，支持 Generate 和 Stream 路径
+- ✅ **SQLite WAL 模式**: 服务器路径显式启用 WAL，支持并发写入
+- ✅ **会话生命周期管理**: 重复 resume 返回 409，活跃会话超限返回 429
+
+### v4 验证状态
+
+**v4 验收命令** (全部通过):
+```bash
+go build ./...
+go test ./...
+go test ./cmd/server/...
+go test ./internal/server/...
+go test ./internal/runtime/... -run TestSessionManager
+go test ./internal/llm/... -run "Test(OpenAI|Anthropic)"
+go test ./cmd/agent/... -run TestCLIUnaffectedByServer
+```
+
+**API 端点验证**:
+- ✅ `POST /api/v1/run` 创建新会话并返回 202 Accepted
+- ✅ `POST /api/v1/resume` 恢复未完成会话，拒绝已运行/缺失会话
+- ✅ `GET /api/v1/sessions/{id}/inspect` 无需活跃 actor 即可读取
+- ✅ `GET /api/v1/sessions/{id}/stream` SSE 有序事件输出
+- ✅ `GET /healthz` 健康检查（无认证）
+- ✅ 所有 `/api/v1/*` 端点强制 JWT 认证
+
+**v4 验证状态**: 所有 API 端点、SSE 流、并发执行、Provider 实现、SQLite WAL、CLI 非回归测试已通过。详见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
 ---
 
@@ -155,30 +197,11 @@ go run ./cmd/agent run --task "hello" --provider openai
 go run ./cmd/agent run --task "hello" --provider deepseek
 `
 
-说明：openai / nthropic 当前为 stub provider（用于边界与流程验证），dashscope 为真实 HTTP 适配实现。
-
-## Git 操作记录
-
-### 初始化 (已在其他主机完成)
-`ash
-git init
-git add .
-git commit -m "feat: initial commit"
-git remote add origin https://github.com/zhen2675440601/zheng-harness.git
-git push -u origin main
-`
-
-### Phase 1-2 提交历史
-`ash
-# 多 provider LLM 支持与 DashScope 集成
-git add -A
-git commit -m "feat: add multi-provider LLM support with DashScope integration"
-git push origin main
-`
+说明：openai / anthropic / dashscope 均已完成真实 HTTP Provider 实现；其中 openai 与 anthropic 已在 v4 完成从 stub 到生产契约实现的切换。
 
 ## 下一步执行入口
 
-**Phase 状态**: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ | v1 ✅ | v2 ✅ | v3 规划中
+**Phase 状态**: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ | v1 ✅ | v2 ✅ | v3 ✅ | v4 ✅
 
 ### 跨机器 handoff (Git-Based Continuation)
 
@@ -358,3 +381,147 @@ go test -race ./internal/orchestration/...                 # 多 Agent race 检�
 v2 发布准备已完成，所有功能实现、测试验证、文档更新已完成。可由人工执行正式发布操作。
 
 ---
+
+## v3 发布完成 ✅
+
+**v3 发布日期**: 2026-04-30  
+**发布版本**: v3.0.0  
+**状态**: READY
+
+### v3 新增功能总结
+
+#### 1. 三家族插件系统
+- **Provider 家族**: 抽象 LLM 后端差异 (模型 API、流式协议、token 计数)
+- **Verifier 家族**: 任务感知验证策略，检查证据并决定完成状态
+- **Agent Strategy 家族**: 替代默认 plan-execute-verify 循环的推理与动作选择策略
+
+#### 2. Fail-Closed 运行时语义
+- 显式选择插件缺失/不兼容时确定性失败，不静默 fallback
+- 插件执行失败时错误归因到对应插件
+- 插件崩溃不导致宿主崩溃，失败可审计
+
+#### 3. 来源可追溯性
+- 插件身份（名称、版本、来源路径）持久化
+- 合约版本与每次工具调用一起记录
+- `inspect` 可读历史 provenance，无需实时插件加载
+
+#### 4. 内置优先原则
+- 内置工具和 provider 始终为首选默认实现
+- 插件扩展但从不替换内置功能
+- 命名空间碰撞时，内置实现优先
+
+### v3 测试覆盖
+
+**Provider 家族测试**: 5 个证明面 (registry、adapter、metadata、compatibility、unknown rejection)  
+**Verifier 家族测试**: 7 个证明面 (registry、policy rejection、timeout、crash、malformed result)  
+**Agent Strategy 测试**: 4 个证明面 (built-in execution、persistence、cancellation、invalid response)  
+**Fail-Closed 测试**: 4 个证明面 (load failure、timeout、crash、resume unavailable)  
+**Provenance 测试**: 3 个证明面 (persistence、verifier provenance、inspect without live plugin)  
+**内置兼容测试**: 6 个证明面 (config load、builtin tools、builtin providers、CLI compatibility)
+
+### v3 验收命令
+
+```bash
+go test ./internal/llm/...              # Provider 插件家族
+go test ./internal/verify/...           # Verifier 插件家族
+go test ./internal/e2e/... -run TestE2E # 端到端验证
+go test ./internal/plugin/...           # 插件系统 (v2 + v3)
+go test ./internal/orchestration/...    # 多 Agent 编排 (v2 + v3)
+```
+
+### v3 发布说明
+
+**状态**: READY  
+**Release Blockers**: 0  
+**验收测试**: 全部通过  
+**文档更新**: README/USAGE/PROGRESS/validation-matrix 已同步
+
+v3 发布准备已完成，所有功能实现、测试验证、文档更新已完成。
+
+---
+
+## v4 发布完成 ✅
+
+**v4 发布日期**: 2026-05-06  
+**发布版本**: v4.0.0  
+**状态**: READY
+
+### v4 新增功能总结
+
+#### 1. HTTP API 服务器
+- **`cmd/server`**: 独立的 HTTP API 服务器入口点
+- **双入口点设计**: CLI 和服务器共享底层 engine 组装逻辑
+- **JWT 认证**: 所有 `/api/v1/*` 端点强制认证，`/healthz` 除外
+
+#### 2. REST API 端点
+- `POST /api/v1/run`: 创建新会话并异步执行 (202 Accepted)
+- `POST /api/v1/resume`: 恢复未完成会话 (409 对已运行会话)
+- `GET /api/v1/sessions/{id}/inspect`: 检查会话状态
+- `GET /api/v1/sessions/{id}/stream`: SSE 流式输出
+- `GET /healthz`: 健康检查（无认证）
+
+#### 3. SSE 流式输出
+- **6 种事件类型**: token_delta、tool_start、tool_end、step_complete、error、session_complete
+- **有序输出**: 会话内事件有序传递
+- **断开语义**: 客户端断开不取消会话，重连仅接收未来事件（无回放）
+- **心跳**: 每 15 秒发送心跳注释
+
+#### 4. 会话并发执行
+- **Session-Actor 架构**: 每个活跃会话独立 goroutine + engine 实例
+- **并发限制**: 默认 8 个活跃会话上限（可配置），超限 429
+- **重复请求处理**: 409 Conflict 对重复 resume/start
+- **优雅关闭**: 拒绝新请求，等待进行中会话完成
+
+#### 5. SQLite ��发强化
+- **WAL 模式**: 服务器路径显式启用 WAL
+- **并发测试**: 验证多会话并发写入时 inspect 一致
+- **生命周期状态**: queued/running/completed/failed/cancelled/resumable 持久化
+
+#### 6. OpenAI/Anthropic Provider
+- **OpenAI Provider**: 真实 HTTP-backed 实现，支持 Generate 和 Stream
+- **Anthropic Provider**: 真实 HTTP-backed 实现，支持 Generate 和 Stream
+- **错误标准化**: Provider 错误规范化为确定性运行时错误
+
+### v4 测试覆盖
+
+**API 端点测试**: 5 个证明面 (run、resume、inspect、stream、healthz)  
+**认证测试**: 4 个证明面 (auth success、401 rejection、409 conflict、429 limit)  
+**SSE 流测试**: 4 个证明面 (ordered events、disconnect behavior、overflow handling、heartbeat)  
+**并发测试**: 3 个证明面 (multi-session concurrency、duplicate resume、active limit)  
+**Provider 测试**: 6 个证明面 (OpenAI generate/stream、Anthropic generate/stream、error normalization)  
+**SQLite WAL 测试**: 2 个证明面 (concurrent writes、resume eligibility persistence)  
+**CLI 非回归测试**: 1 个证明面 (CLI unaffected by server additions)
+
+### v4 验收命令
+
+```bash
+go build ./...
+go test ./...
+go test ./cmd/server/...
+go test ./internal/server/...
+go test ./internal/runtime/... -run TestSessionManager
+go test ./internal/llm/... -run "Test(OpenAI|Anthropic)"
+go test ./cmd/agent/... -run TestCLIUnaffectedByServer
+
+# 手动验证
+curl -sS http://127.0.0.1:8080/healthz
+curl -sS -X POST http://127.0.0.1:8080/api/v1/run \
+  -H "Authorization: Bearer test-token" \
+  -H "Content-Type: application/json" \
+  --data '{"task":"ping","task_type":"general"}'
+curl -N http://127.0.0.1:8080/api/v1/sessions/test-session/stream \
+  -H "Authorization: Bearer test-token"
+```
+
+### v4 ADR 文档
+- [ADR-009](docs/ADR-009-api-server.md): API 服务器架构决策（待创建）
+
+### v4 发布说明
+
+**状态**: READY  
+**Release Blockers**: 0  
+**验收测试**: 全部通过  
+**文档更新**: README/USAGE/PROGRESS/validation-matrix 已同步
+
+v4 发布准备已完成，所有功能实现、测试验证、文档更新已完成。
+

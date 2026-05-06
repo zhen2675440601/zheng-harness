@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,9 +20,9 @@ import (
 	"zheng-harness/internal/orchestration"
 	pluginruntime "zheng-harness/internal/plugin"
 	"zheng-harness/internal/runtime"
+	"zheng-harness/internal/runtimebuilder"
 	"zheng-harness/internal/store"
 	"zheng-harness/internal/tools"
-	"zheng-harness/internal/verify"
 )
 
 const defaultDBPath = "./agent.db"
@@ -38,6 +37,7 @@ type cliApp struct {
 	stdout       io.Writer
 	stderr       io.Writer
 	cfg          config.Config
+	builder      *runtimebuilder.Builder
 	newSession   func(string) (*store.SQLiteSessionStore, error)
 	newMemory    func(string) (*store.SQLiteMemoryStore, error)
 	newExecutor  func() domain.ToolExecutor
@@ -89,6 +89,7 @@ type inspectJSONOutput struct {
 	Plan               string               `json:"plan"`
 	StepCount          int                  `json:"step_count"`
 	StepSummaries      []string             `json:"step_summaries"`
+	Provenance         *domain.Provenance   `json:"provenance,omitempty"`
 	TaskType           domain.TaskCategory  `json:"task_type,omitempty"`
 	ProtocolHint       string               `json:"protocol_hint,omitempty"`
 	VerificationPolicy string               `json:"verification_policy,omitempty"`
@@ -112,26 +113,16 @@ type multiAgentOptions struct {
 	Aggregation string
 }
 
-type pluginExecutor struct {
-	base     domain.ToolExecutor
-	registry *tools.Registry
-	plugins  map[string]pluginruntime.PluginTool
-	manager  *pluginruntime.PluginManager
+type providerMetadataResolver interface {
+	Get(id string) (pluginruntime.ProviderDescriptor, bool)
 }
 
-// configFlagNames 包含 config.Load 可识别的标志名称。
-// 这些是唯一应传递给 config.Load 的标志。
-// 其他诸如 --task、--session、--db、--json 的标志仅用于 run/resume/inspect。
-var configFlagNames = map[string]bool{
-	"config":          true,
-	"model":           true,
-	"provider":        true,
-	"max-steps":       true,
-	"step-timeout":    true,
-	"memory-limit-mb": true,
-	"verify-mode":     true,
-	"api-key":         true,
-	"base-url":        true,
+type verifierMetadataResolver interface {
+	GetRegistration(id string) (pluginruntime.VerifierRegistration, bool)
+}
+
+type agentStrategyMetadataResolver interface {
+	Get(id string) (pluginruntime.AgentStrategyDescriptor, bool)
 }
 
 type stringSliceFlag []string
@@ -152,80 +143,47 @@ func (s *stringSliceFlag) Set(value string) error {
 	return nil
 }
 
-// filterConfigArgs 仅从参数中提取与配置相关的标志。
-// 这样可避免在传递
-// run/resume/inspect 子命令参数给 config.Load 时出现“flag provided but not defined”错误。
-func filterConfigArgs(args []string) []string {
-	var filtered []string
-	i := 0
-	for i < len(args) {
-		arg := args[i]
-		// 检查该参数是否为配置标志（同时处理 -flag 与 --flag 两种形式）。
-		flagName := strings.TrimLeft(arg, "-")
-		if equalsIndex := strings.Index(flagName, "="); equalsIndex != -1 {
-			flagName = flagName[:equalsIndex]
-		}
-		if configFlagNames[flagName] {
-			filtered = append(filtered, arg)
-			// 所有配置标志都带有值；如果使用 -flag=value 形式，则值已包含在参数中。
-			// 如果使用 -flag value 形式，则需要将下一个参数一并作为值。
-			if !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				i++
-				filtered = append(filtered, args[i])
-			}
-		}
-		i++
-	}
-	return filtered
-}
-
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cfg := config.Default()
-	if len(args) > 0 && (args[0] == "run" || args[0] == "resume") {
-		filteredArgs := filterConfigArgs(args[1:])
-		loaded, err := config.Load(filteredArgs)
+	if len(args) > 0 {
+		loaded, err := runtimebuilder.LoadCLIConfig(args[0], args[1:])
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		cfg = loaded
 	}
-
-	modelFactory := func() domain.Model {
-		return &FakeModel{}
-	}
-	if cfg.GetProviderType() != "" && cfg.GetAPIKey() != "" {
-		provider, err := llm.NewProvider(cfg)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, err)
-			return 1
-		}
-		modelFactory = func() domain.Model {
-			return runtime.NewModelAdapter(provider)
-		}
+	builder, err := runtimebuilder.New(cfg, runtimebuilder.Options{WorkspaceRoot: ".", NewPluginManager: pluginruntime.NewManager})
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 1
 	}
 
 	app := cliApp{
 		stdout: stdout,
 		stderr: stderr,
 		cfg:    cfg,
+		builder: builder,
 		newSession: func(dbPath string) (*store.SQLiteSessionStore, error) {
-			return store.NewSQLiteSessionStore(dbPath)
+			return builder.NewSessionStore(dbPath, runtimebuilder.StoreOptions{})
 		},
 		newMemory: func(dbPath string) (*store.SQLiteMemoryStore, error) {
-			return store.NewMemoryStore(dbPath)
+			return builder.NewMemoryStore(dbPath, runtimebuilder.StoreOptions{})
 		},
 		newExecutor: func() domain.ToolExecutor {
-			executor, err := tools.NewExecutor(".",
-				tools.WithAllowedCommands(cfg.Runtime.AllowedCommands),
-			)
+			executor, err := builder.NewExecutor(runtimebuilder.ExecutorOptions{})
 			if err != nil {
 				return FakeToolExecutor{}
 			}
 			return executor
 		},
 		newPluginManager: pluginruntime.NewManager,
-		newModel: modelFactory,
+		newModel: func() domain.Model {
+			if model := builder.NewModel(); model != nil {
+				return model
+			}
+			return &FakeModel{}
+		},
 		newVerifier: func(executor domain.ToolExecutor) domain.Verifier {
 			return newVerifierFromConfig(cfg, executor)
 		},
@@ -243,16 +201,26 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 func newVerifierFromConfig(cfg config.Config, executor domain.ToolExecutor) domain.Verifier {
-	switch cfg.Runtime.VerifyMode {
-	case config.VerifyModeOff:
+	verifier := runtimebuilder.NewVerifierFromConfig(cfg, executor)
+	if verifier == nil {
 		return FakeVerifier{}
-	case config.VerifyModeStandard:
-		return verify.NewTaskAwareVerifier(cfg.Runtime.VerifyMode, executor)
-	case config.VerifyModeStrict:
-		return verify.NewTaskAwareVerifier(cfg.Runtime.VerifyMode, executor)
-	default:
-		return verify.NewTaskAwareVerifier(cfg.Runtime.VerifyMode, executor)
 	}
+	return verifier
+}
+
+func filterConfigArgs(args []string) []string {
+	return runtimebuilder.FilterConfigArgs(args)
+}
+
+func (a cliApp) ensureBuilder() *runtimebuilder.Builder {
+	if a.builder != nil {
+		return a.builder
+	}
+	builder, err := runtimebuilder.New(a.cfg, runtimebuilder.Options{WorkspaceRoot: ".", NewPluginManager: a.newPluginManager})
+	if err != nil {
+		return nil
+	}
+	return builder
 }
 
 func (a cliApp) run(ctx context.Context, args []string) int {
@@ -295,10 +263,11 @@ func isRootHelpArg(arg string) bool {
 func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
-	// 这里定义占位的 --config 和 --provider 标志，使 CLI 能无报错地接收它们。
+	// 这里定义占位的配置标志，使 CLI 能无报错地接收它们。
 	// 实际的配置加载会在调用此函数之前于 runCLI 中完成。
 	_ = fs.String("config", "", "config file path (unused in subcommand)")
-	_ = fs.String("provider", "", "provider (unused in subcommand)")
+	_ = fs.String("provider", "", "built-in provider id (unused in subcommand)")
+	_ = fs.String("plugin-provider", "", "plugin-backed provider id (unused in subcommand)")
 	_ = fs.String("model", "", "model (unused in subcommand)")
 	_ = fs.String("api-key", "", "API key (unused in subcommand)")
 	_ = fs.String("base-url", "", "base URL (unused in subcommand)")
@@ -374,15 +343,20 @@ func (a cliApp) runCommand(ctx context.Context, args []string) error {
 	if closer, ok := executor.(interface{ Close() error }); ok {
 		defer func() { _ = closer.Close() }()
 	}
-	engine := runtime.Engine{
-		Model:          a.newModel(),
-		Tools:          executor,
-		Memory:         memoryStore,
-		Sessions:       aliasStore,
-		Verifier:       a.newVerifier(executor),
-		MaxSteps:       *maxSteps,
-		MaxRetries:     *maxSteps,
-		SessionTimeout: a.sessionTimeout(*maxSteps),
+	builder := a.ensureBuilder()
+	engine := runtime.Engine{}
+	if builder != nil {
+		engine = builder.BuildEngine(runtimebuilder.EngineOptions{
+			Model:         a.newModel(),
+			Tools:         executor,
+			Memory:        memoryStore,
+			Sessions:      aliasStore,
+			Verifier:      a.newVerifier(executor),
+			MaxSteps:      *maxSteps,
+			PersistentCtx: ctx,
+		})
+	} else {
+		engine = runtime.Engine{Model: a.newModel(), Tools: executor, Memory: memoryStore, Sessions: aliasStore, Verifier: a.newVerifier(executor), MaxSteps: *maxSteps, MaxRetries: *maxSteps, SessionTimeout: a.sessionTimeout(*maxSteps)}
 	}
 
 	runCtx, stop := a.withSignalCancellation(ctx)
@@ -510,15 +484,23 @@ func (a cliApp) resumeCommand(ctx context.Context, args []string) error {
 	if closer, ok := executor.(interface{ Close() error }); ok {
 		defer func() { _ = closer.Close() }()
 	}
-	engine := runtime.Engine{
-		Model:          a.newModel(),
-		Tools:          executor,
-		Memory:         memoryStore,
-		Sessions:       newSessionAliasStore(sessionStore, ctx, *sessionID),
-		Verifier:       a.newVerifier(executor),
-		MaxSteps:       *maxSteps,
-		MaxRetries:     *maxSteps,
-		SessionTimeout: a.sessionTimeout(*maxSteps),
+	if err := validateResumePluginRequirements(session, a.cfg, executor); err != nil {
+		return err
+	}
+	builder := a.ensureBuilder()
+	engine := runtime.Engine{}
+	if builder != nil {
+		engine = builder.BuildEngine(runtimebuilder.EngineOptions{
+			Model:         a.newModel(),
+			Tools:         executor,
+			Memory:        memoryStore,
+			Sessions:      newSessionAliasStore(sessionStore, ctx, *sessionID),
+			Verifier:      a.newVerifier(executor),
+			MaxSteps:      *maxSteps,
+			PersistentCtx: ctx,
+		})
+	} else {
+		engine = runtime.Engine{Model: a.newModel(), Tools: executor, Memory: memoryStore, Sessions: newSessionAliasStore(sessionStore, ctx, *sessionID), Verifier: a.newVerifier(executor), MaxSteps: *maxSteps, MaxRetries: *maxSteps, SessionTimeout: a.sessionTimeout(*maxSteps)}
 	}
 
 	runCtx, stop := a.withSignalCancellation(ctx)
@@ -619,10 +601,15 @@ func (a cliApp) openRuntimeDeps(dbPath string) (*store.SQLiteSessionStore, *stor
 
 func (a cliApp) withExtraAllowedCommands(commands []string) cliApp {
 	a.newExecutor = func() domain.ToolExecutor {
-		executor, err := tools.NewExecutor(".",
-			tools.WithAllowedCommands(a.cfg.Runtime.AllowedCommands),
-			tools.WithExtraAllowedCommands(commands),
-		)
+		builder := a.ensureBuilder()
+		if builder == nil {
+			executor, err := tools.NewExecutor(".", tools.WithAllowedCommands(a.cfg.Runtime.AllowedCommands), tools.WithExtraAllowedCommands(commands))
+			if err != nil {
+				return FakeToolExecutor{}
+			}
+			return executor
+		}
+		executor, err := builder.NewExecutor(runtimebuilder.ExecutorOptions{ExtraAllowedCommands: commands})
 		if err != nil {
 			return FakeToolExecutor{}
 		}
@@ -653,127 +640,19 @@ func (a cliApp) withPluginOptions(options pluginCLIOptions) (cliApp, error) {
 }
 
 func (a cliApp) buildPluginExecutor(base domain.ToolExecutor, options pluginCLIOptions) (domain.ToolExecutor, error) {
-	managerFactory := a.newPluginManager
-	if managerFactory == nil {
-		managerFactory = pluginruntime.NewManager
+	builder := a.ensureBuilder()
+	if builder == nil {
+		return nil, errors.New("runtime builder is not initialized")
 	}
-	manager := managerFactory(options.DiscoveryDir)
-	if manager == nil {
-		return nil, errors.New("plugin manager factory returned nil")
-	}
-	manager.Policy = tools.SafetyPolicy{
-		WorkspaceRoot:      ".",
-		AllowedPluginPaths: append(append([]string(nil), a.cfg.Runtime.AllowedPluginPaths...), options.AllowedPaths...),
-		PluginCapabilities: append([]string(nil), a.cfg.Runtime.PluginCapabilities...),
-	}
-	registry := cloneExecutorRegistry(base)
-	loaded := make(map[string]pluginruntime.PluginTool, len(options.Names))
-	for _, path := range resolvePluginTargets(options) {
-		if err := manager.Policy.ValidatePluginPath(path); err != nil {
-			_ = manager.CloseAll()
-			return nil, err
-		}
-		tool, err := manager.Load(context.Background(), path)
-		if err != nil {
-			_ = manager.CloseAll()
-			return nil, err
-		}
-		if err := registry.Register(toToolDefinition(tool)); err != nil {
-			_ = manager.CloseAll()
-			return nil, err
-		}
-		loaded[tool.Name()] = tool
-	}
-	return &pluginExecutor{base: base, registry: registry, plugins: loaded, manager: manager}, nil
+	return builder.WrapExecutorWithPlugins(base, runtimebuilder.PluginOptions(options))
 }
 
 func resolvePluginTargets(options pluginCLIOptions) []string {
-	targets := make([]string, 0, len(options.Names))
-	for _, name := range options.Names {
-		trimmed := strings.TrimSpace(name)
-		if trimmed == "" {
-			continue
-		}
-		if isPluginPathReference(trimmed) {
-			targets = append(targets, trimmed)
-			continue
-		}
-		targets = append(targets, filepath.Join(options.DiscoveryDir, trimmed))
-	}
-	return targets
+	return runtimebuilder.ResolvePluginTargets(runtimebuilder.PluginOptions(options))
 }
 
 func normalizePluginCLIOptions(options pluginCLIOptions) pluginCLIOptions {
-	options.DiscoveryDir = strings.TrimSpace(options.DiscoveryDir)
-	if options.DiscoveryDir == "" {
-		options.DiscoveryDir = "./plugins"
-	}
-	options.Names = normalizeStringValues(options.Names)
-	options.AllowedPaths = normalizeStringValues(options.AllowedPaths)
-	return options
-}
-
-func normalizeStringValues(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	normalized := make([]string, 0, len(values))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-		normalized = append(normalized, trimmed)
-	}
-	return normalized
-}
-
-func isPluginPathReference(value string) bool {
-	return strings.Contains(value, "/") || strings.Contains(value, `\\`) || filepath.Ext(value) != ""
-}
-
-func cloneExecutorRegistry(base domain.ToolExecutor) *tools.Registry {
-	registry := tools.NewRegistry()
-	provider, ok := base.(interface{ Registry() *tools.Registry })
-	if !ok || provider.Registry() == nil {
-		return registry
-	}
-	for _, def := range provider.Registry().List() {
-		_ = registry.Register(def)
-	}
-	return registry
-}
-
-func toToolDefinition(tool pluginruntime.PluginTool) tools.ToolDefinition {
-	return tools.ToolDefinition{
-		Name:           tool.Name(),
-		Description:    tool.Description(),
-		Schema:         tool.Schema(),
-		DefaultTimeout: 30 * time.Second,
-		SafetyLevel:    tool.SafetyLevel(),
-		Handler:        tool.Execute,
-	}
-}
-
-func (e *pluginExecutor) Execute(ctx context.Context, call domain.ToolCall) (domain.ToolResult, error) {
-	if tool, ok := e.plugins[call.Name]; ok {
-		return tool.Execute(ctx, call)
-	}
-	return e.base.Execute(ctx, call)
-}
-
-func (e *pluginExecutor) Registry() *tools.Registry {
-	if e == nil {
-		return nil
-	}
-	return e.registry
-}
-
-func (e *pluginExecutor) Close() error {
-	if e == nil || e.manager == nil {
-		return nil
-	}
-	return e.manager.CloseAll()
+	return pluginCLIOptions(runtimebuilder.NormalizePluginOptions(runtimebuilder.PluginOptions(options)))
 }
 
 type pluginInitializationErrorExecutor struct{ err error }
@@ -787,6 +666,12 @@ func (e pluginInitializationErrorExecutor) Registry() *tools.Registry {
 }
 
 func (a cliApp) defaultMaxSteps() int {
+	if a.builder != nil {
+		return a.builder.DefaultMaxSteps()
+	}
+	if builder := a.ensureBuilder(); builder != nil {
+		return builder.DefaultMaxSteps()
+	}
 	if a.cfg.Runtime.MaxSteps > 0 {
 		return a.cfg.Runtime.MaxSteps
 	}
@@ -794,6 +679,12 @@ func (a cliApp) defaultMaxSteps() int {
 }
 
 func (a cliApp) stepTimeout() time.Duration {
+	if a.builder != nil {
+		return a.builder.StepTimeout()
+	}
+	if builder := a.ensureBuilder(); builder != nil {
+		return builder.StepTimeout()
+	}
 	if a.cfg.Runtime.StepTimeout > 0 {
 		return a.cfg.Runtime.StepTimeout
 	}
@@ -801,6 +692,12 @@ func (a cliApp) stepTimeout() time.Duration {
 }
 
 func (a cliApp) sessionTimeout(maxSteps int) time.Duration {
+	if a.builder != nil {
+		return a.builder.SessionTimeout(maxSteps)
+	}
+	if builder := a.ensureBuilder(); builder != nil {
+		return builder.SessionTimeout(maxSteps)
+	}
 	if maxSteps <= 0 {
 		maxSteps = a.defaultMaxSteps()
 	}
@@ -850,6 +747,9 @@ func (a cliApp) emitResumeResult(session domain.Session, plan domain.Plan, steps
 		heading = "Continued"
 	}
 	_, _ = fmt.Fprintf(a.stdout, "%s session: %s\nStatus: %s\nPlan: %s\nHistory:\n", heading, session.ID, session.Status, plan.Summary)
+	for _, line := range summarizeProvenance(session.Provenance) {
+		_, _ = fmt.Fprintf(a.stdout, "- %s\n", line)
+	}
 	for _, line := range summarizeSteps(steps) {
 		_, _ = fmt.Fprintf(a.stdout, "- %s\n", line)
 	}
@@ -870,6 +770,7 @@ func (a cliApp) emitInspectResult(jsonMode bool, task domain.Task, session domai
 			Plan:               plan.Summary,
 			StepCount:          len(steps),
 			StepSummaries:      summarizeSteps(steps),
+			Provenance:         session.Provenance,
 			TaskType:           metadata.TaskType,
 			ProtocolHint:       metadata.ProtocolHint,
 			VerificationPolicy: metadata.VerificationPolicy,
@@ -878,6 +779,9 @@ func (a cliApp) emitInspectResult(jsonMode bool, task domain.Task, session domai
 		return
 	}
 	_, _ = fmt.Fprintf(a.stdout, "Session: %s\nStatus: %s\nTermination: %s\nPlan: %s\nSummary:\n", session.ID, session.Status, terminatedReason, plan.Summary)
+	for _, line := range summarizeProvenance(session.Provenance) {
+		_, _ = fmt.Fprintf(a.stdout, "- %s\n", line)
+	}
 	for _, line := range summarizeSteps(steps) {
 		_, _ = fmt.Fprintf(a.stdout, "- %s\n", line)
 	}
@@ -888,9 +792,10 @@ func (a cliApp) emitInspectResult(jsonMode bool, task domain.Task, session domai
 
 func (a cliApp) printUsage() {
 	_, _ = fmt.Fprintln(a.stderr, "Usage: zheng-agent <run|resume|inspect> [flags]")
-	_, _ = fmt.Fprintln(a.stderr, "  run --task \"task description\" [--db ./agent.db] [--json] [--stream] [--decompose] [--max-workers 4] [--aggregation all-succeed]")
+	_, _ = fmt.Fprintln(a.stderr, "  run --task \"task description\" [--provider <built-in-id> | --plugin-provider <plugin-id>] [--db ./agent.db] [--json] [--stream] [--decompose] [--max-workers 4] [--aggregation all-succeed]")
 	_, _ = fmt.Fprintln(a.stderr, "  resume --session <id> [--db ./agent.db] [--json] [--stream]")
 	_, _ = fmt.Fprintln(a.stderr, "  inspect --session <id> [--db ./agent.db] [--json]")
+	_, _ = fmt.Fprintln(a.stderr, "  provider ids: built-in ids use --provider; plugin-backed ids use --plugin-provider")
 	_, _ = fmt.Fprintln(a.stderr, "  --help, -h, help  Show this help")
 }
 
@@ -1223,6 +1128,18 @@ func summarizeSteps(steps []domain.Step) []string {
 	return summaries
 }
 
+func summarizeProvenance(provenance *domain.Provenance) []string {
+	if provenance == nil || len(provenance.Normalize().Plugins) == 0 {
+		return nil
+	}
+	plugins := provenance.Normalize().Plugins
+	summaries := make([]string, 0, len(plugins))
+	for _, plugin := range plugins {
+		summaries = append(summaries, fmt.Sprintf("plugin %s/%s via %s (%s)", plugin.Family, plugin.LogicalID, plugin.ExecutionMode, plugin.SourcePath))
+	}
+	return summaries
+}
+
 func normalizeTaskMetadata(task domain.Task) domain.Task {
 	task = task.Normalize()
 	task.ProtocolHint = strings.TrimSpace(task.ProtocolHint)
@@ -1255,6 +1172,76 @@ func deriveTerminationReason(session domain.Session, steps []domain.Step) string
 	return string(session.Status)
 }
 
+func validateResumePluginRequirements(session domain.Session, cfg config.Config, executor domain.ToolExecutor) error {
+	if session.Provenance == nil {
+		return nil
+	}
+	for _, metadata := range session.Provenance.Normalize().Plugins {
+		switch metadata.Family {
+		case domain.PluginFamilyProvider:
+			if err := validateProviderRequirement(metadata, cfg); err != nil {
+				return err
+			}
+		case domain.PluginFamilyVerifier:
+			if err := validateVerifierRequirement(metadata, cfg, executor); err != nil {
+				return err
+			}
+		case domain.PluginFamilyAgentStrategy:
+			if err := validateAgentStrategyRequirement(metadata); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateProviderRequirement(metadata domain.PluginMetadata, cfg config.Config) error {
+	selected := strings.TrimSpace(cfg.PluginProvider)
+	if selected == "" {
+		return fmt.Errorf("resume fail-closed: provider plugin %q required by session provenance is unavailable; configure --plugin-provider %q", metadata.LogicalID, metadata.LogicalID)
+	}
+	if selected != metadata.LogicalID {
+		return fmt.Errorf("resume fail-closed: provider plugin mismatch, session requires %q but active selection is %q", metadata.LogicalID, selected)
+	}
+	provider, err := llm.NewProvider(cfg)
+	if err != nil {
+		return fmt.Errorf("resume fail-closed: provider plugin %q required by session provenance is unavailable: %w", metadata.LogicalID, err)
+	}
+	contract, ok := provider.(llm.ProviderPluginContract)
+	if !ok {
+		return fmt.Errorf("resume fail-closed: provider plugin mismatch, session requires plugin provider %q but active provider is not plugin-backed", metadata.LogicalID)
+	}
+	activeMetadata := contract.Metadata().Normalize()
+	if activeMetadata.LogicalID != metadata.LogicalID {
+		return fmt.Errorf("resume fail-closed: provider plugin mismatch, session requires %q but active provider is %q", metadata.LogicalID, activeMetadata.LogicalID)
+	}
+	if strings.TrimSpace(metadata.ContractVersion) != "" && activeMetadata.ContractVersion != metadata.ContractVersion {
+		return fmt.Errorf("resume fail-closed: provider plugin mismatch, session requires %q@%s but active provider is %q@%s", metadata.LogicalID, metadata.ContractVersion, activeMetadata.LogicalID, activeMetadata.ContractVersion)
+	}
+	return nil
+}
+
+func validateVerifierRequirement(metadata domain.PluginMetadata, cfg config.Config, executor domain.ToolExecutor) error {
+	policy := strings.TrimSpace(cfg.Runtime.VerifyMode)
+	_ = policy
+	carrier, ok := newVerifierFromConfig(cfg, executor).(interface{ VerifierProvenance() *domain.PluginMetadata })
+	if !ok || carrier == nil || carrier.VerifierProvenance() == nil {
+		return fmt.Errorf("resume fail-closed: verifier plugin %q required by session provenance is unavailable", metadata.LogicalID)
+	}
+	active := carrier.VerifierProvenance().Normalize()
+	if active.LogicalID != metadata.LogicalID || active.ContractVersion != metadata.ContractVersion {
+		return fmt.Errorf("resume fail-closed: verifier plugin mismatch, session requires %q@%s but active verifier is %q@%s", metadata.LogicalID, metadata.ContractVersion, active.LogicalID, active.ContractVersion)
+	}
+	return nil
+}
+
+func validateAgentStrategyRequirement(metadata domain.PluginMetadata) error {
+	if metadata.LogicalID == runtime.BuiltinAgentStrategyHostDefault {
+		return nil
+	}
+	return fmt.Errorf("resume fail-closed: agent strategy plugin %q required by session provenance is unavailable", metadata.LogicalID)
+}
+
 func isTerminalStatus(status domain.SessionStatus) bool {
 	switch status {
 	case domain.SessionStatusSuccess, domain.SessionStatusVerificationFailed, domain.SessionStatusBudgetExceeded, domain.SessionStatusFatalError:
@@ -1264,38 +1251,8 @@ func isTerminalStatus(status domain.SessionStatus) bool {
 	}
 }
 
-type sessionAliasStore struct {
-	inner            *store.SQLiteSessionStore
-	persistentCtx    context.Context
-	desiredSessionID string
-}
+type sessionAliasStore = runtimebuilder.SessionAliasStore
 
 func newSessionAliasStore(inner *store.SQLiteSessionStore, persistentCtx context.Context, desiredSessionID string) sessionAliasStore {
-	if persistentCtx == nil {
-		persistentCtx = context.Background()
-	}
-	return sessionAliasStore{inner: inner, persistentCtx: persistentCtx, desiredSessionID: desiredSessionID}
-}
-
-func (s sessionAliasStore) SaveSession(ctx context.Context, session domain.Session) error {
-	ctx = s.contextOrFallback(ctx)
-	session.ID = s.desiredSessionID
-	return s.inner.SaveSession(ctx, session)
-}
-
-func (s sessionAliasStore) SavePlan(ctx context.Context, plan domain.Plan) error {
-	ctx = s.contextOrFallback(ctx)
-	return s.inner.SavePlan(ctx, plan)
-}
-
-func (s sessionAliasStore) AppendStep(ctx context.Context, _ string, step domain.Step) error {
-	ctx = s.contextOrFallback(ctx)
-	return s.inner.AppendStep(ctx, s.desiredSessionID, step)
-}
-
-func (s sessionAliasStore) contextOrFallback(ctx context.Context) context.Context {
-	if ctx == nil {
-		return s.persistentCtx
-	}
-	return context.WithoutCancel(ctx)
+	return runtimebuilder.NewSessionAliasStore(inner, persistentCtx, desiredSessionID)
 }

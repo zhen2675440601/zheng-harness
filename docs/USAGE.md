@@ -2,6 +2,8 @@
 
 `zheng-agent` 是一个 **通用 Agent Harness** CLI。当前版本支持 coding、research、file workflow 等多种任务类型，并支持实时 streaming 输出、resume/inspect 会话连续性，以及受约束的内置工具集。
 
+**v4+** 新增 **HTTP API 服务器**，支持 REST API 和 SSE 流式输出。详见 [API 服务器章节](#api-服务器-v4)。
+
 本文档描述已验证的 CLI 契约。验证证据见 [`validation-matrix.md`](validation-matrix.md)。
 
 ## 命令概览
@@ -72,6 +74,14 @@ go run ./cmd/agent run \
 - `--max-steps`：最大步数，必须大于 0
 - `--json`：输出机器可读 JSON
 - `--stream`：启用实时事件流输出；文本模式下增量打印 token/tool/step 事件，JSON 模式下输出 JSONL
+- `--provider`：选择内置 provider ID（如 `openai`、`dashscope`）
+- `--plugin-provider`：选择插件 provider ID（如 `acme/provider`）
+
+provider 选择规则：
+
+- 内置 provider 与插件 provider 分属两个显式选择通道，不共享命名空间语义
+- 如果配置文件中的 `plugin_provider` 与 CLI 的 `--provider` / `--plugin-provider` 冲突，命令会返回确定性冲突错误
+- 显式选择插件后若插件不可用，命令会 fail-closed 失败，而不是切回内置 provider
 
 ### Task-Type 验证策略
 
@@ -202,8 +212,30 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 - 计划摘要
 - 步数统计
 - 最近步骤摘要
+- 若存在插件参与，则包含持久化的 `provenance`
 
 对于 streaming session，`inspect` 仍然只展示持久化后的最终 plan/step/session 结果，不展示中间 token delta 事件。
+
+即使原始插件文件已经缺失，`inspect` 仍然可以读取并展示历史中的 provenance；它不依赖实时插件加载。
+
+## 插件 provenance 与 fail-closed resume
+
+当 session 使用过 provider、verifier 或 agent-strategy 插件时，运行时会持久化以下 provenance 信息：
+
+- family
+- logical ID
+- execution mode
+- contract version
+- implementation version
+- source path
+
+这些字段会出现在 `inspect --json` 的 `provenance` 字段中。
+
+`resume` 会读取这些 provenance 并执行一致性检查：
+
+- 若 session 依赖的插件当前不可用，`resume` 返回 `resume fail-closed: ...` 错误
+- 若当前显式选择的插件与 session 持久化 provenance 不匹配，`resume` 返回确定性 mismatch 错误
+- 失败不会篡改既有 session 历史；用户仍可继续用 `inspect` 查看完整记录
 
 ## 内置工具
 
@@ -405,3 +437,273 @@ export ZHENG_BASE_URL=https://coding.dashscope.aliyuncs.com/apps/anthropic/v1
 - Slack / Telegram / Discord 等网关接入
 - 向量数据库、embedding 检索、知识图谱
 - 面向 v2 的平台化文档
+
+---
+
+## API 服务器 (v4+)
+
+v4 新增独立的 HTTP API 服务器，提供 REST API 和 SSE 流式输出能力。
+
+### 启动服务器
+
+```bash
+# 基本启动
+go run ./cmd/server --config ./zheng.json --addr :8080
+
+# 指定数据库文件
+go run ./cmd/server --config ./zheng.json --addr :8080 --db ./agent.db
+
+# 配置活跃会话上限
+go run ./cmd/server --config ./zheng.json --max-active-sessions 4
+```
+
+**配置要求**:
+- JWT 认证配置必须设置（所有 `/api/v1/*` 端点需要认证）
+- SQLite 数据库必须可写
+- 服务器启动时自动启用 WAL 模式
+
+### JWT 认证配置
+
+在配置文件中设置 JWT 相关参数：
+
+```json
+{
+  "jwt_secret": "your-secret-key-here",
+  "jwt_expiry": "24h",
+  "default_provider": "dashscope",
+  "providers": { ... },
+  "runtime": { ... }
+}
+```
+
+**安全建议**:
+- 使用强随机密钥作为 `jwt_secret`
+- 生产环境应通过环境变量或密钥管理服务注入密钥
+- 定期轮换密钥
+
+### API 端点
+
+#### `GET /healthz`
+
+健康检查端点（无需认证）。
+
+```bash
+curl -sS http://127.0.0.1:8080/healthz
+```
+
+**响应**: HTTP 200，机器可读健康状态。
+
+#### `POST /api/v1/run`
+
+创建新会话并异步执行。
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/run \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "task": "inspect repository and propose next step",
+    "task_type": "coding",
+    "max_steps": 8
+  }'
+```
+
+**请求字段**:
+- `task` (必填): 任务描述
+- `task_type` (可选): 任务类型 (`coding`, `research`, `file_workflow`, `general`)
+- `max_steps` (可选): 最大步数，默认 8
+
+**响应** (202 Accepted):
+```json
+{
+  "session_id": "session-1710000000000000000",
+  "status": "running",
+  "stream_url": "/api/v1/sessions/session-1710000000000000000/stream",
+  "inspect_url": "/api/v1/sessions/session-1710000000000000000/inspect"
+}
+```
+
+**错误状态**:
+- 400 Bad Request: 请求体格式错误或必填字段缺失
+- 401 Unauthorized: JWT 认证失败
+- 429 Too Many Requests: 活跃会话数超限
+
+#### `POST /api/v1/resume`
+
+恢复未完成的会话。
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/resume \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "session_id": "session-1710000000000000000"
+  }'
+```
+
+**请求字段**:
+- `session_id` (必填): 要恢复的会话 ID
+
+**响应** (202 Accepted):
+```json
+{
+  "session_id": "session-1710000000000000000",
+  "status": "resuming",
+  "stream_url": "/api/v1/sessions/session-1710000000000000000/stream",
+  "inspect_url": "/api/v1/sessions/session-1710000000000000000/inspect"
+}
+```
+
+**错误状态**:
+- 401 Unauthorized: JWT 认证失败
+- 404 Not Found: 会话不存在
+- 409 Conflict: 会话已完成/正在运行/不可恢复
+
+#### `GET /api/v1/sessions/{id}/inspect`
+
+检查会话状态（无需活跃 actor）。
+
+```bash
+curl -sS -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  http://127.0.0.1:8080/api/v1/sessions/session-1710000000000000000/inspect
+```
+
+**响应** (200 OK):
+```json
+{
+  "session_id": "session-1710000000000000000",
+  "status": "completed",
+  "task": "inspect repository and propose next step",
+  "task_type": "coding",
+  "plan": "Inspect the repository and summarize the next action.",
+  "steps": 3,
+  "created_at": "2026-05-06T10:00:00Z",
+  "completed_at": "2026-05-06T10:05:00Z",
+  "provenance": { ... }
+}
+```
+
+**错误状态**:
+- 401 Unauthorized: JWT 认证失败
+- 404 Not Found: 会话不存在
+
+#### `GET /api/v1/sessions/{id}/stream`
+
+SSE 流式输出运行时事件。
+
+```bash
+curl -N -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  http://127.0.0.1:8080/api/v1/sessions/session-1710000000000000000/stream
+```
+
+**SSE 事件格式**:
+```
+event: token_delta
+data: {"step_index":1,"content":"hello"}
+
+event: tool_start
+data: {"step_index":1,"tool_name":"code_search","input":"{\"pattern\":\"RunStream\"}"}
+
+event: tool_end
+data: {"step_index":1,"tool_name":"code_search","output":"internal/runtime/runtime.go","error":""}
+
+event: step_complete
+data: {"step_index":1,"step_summary":"validated runtime stream path"}
+
+event: session_complete
+data: {"session_id":"session-1710000000000000000","status":"success"}
+```
+
+**事件类型**:
+- `token_delta`: 增量模型输出
+- `tool_start` / `tool_end`: 工具调用生命周期
+- `step_complete`: 步骤完成
+- `error`: 错误事件
+- `session_complete`: 会话完成（终端事件）
+
+**断开语义**:
+- 客户端断开 SSE 连接**不会**取消会话执行
+- 重连仅接收未来事件（v4 无事件回放）
+- 慢速订阅者缓冲区满时（256 事件），该连接会收到错误并关闭，但会话继续运行
+- 服务器每 15 秒发送心跳注释保持连接
+
+**错误状态**:
+- 401 Unauthorized: JWT 认证失败
+- 404 Not Found: 会话不存在
+
+### 会话并发限制
+
+服务器默认最多允许 **8 个活跃会话** 并发执行。可通过配置或 CLI 参数调整：
+
+```json
+{
+  "server": {
+    "max_active_sessions": 4
+  }
+}
+```
+
+```bash
+go run ./cmd/server --max-active-sessions 4
+```
+
+**超限行为**:
+- 新 `POST /api/v1/run` 请求返回 **429 Too Many Requests**
+- 错误响应包含重试建议（如等待或增加限制）
+
+### 优雅关闭
+
+服务器收到 SIGINT/SIGTERM 后：
+
+1. 停止接受新请求（`/healthz` 返回不健康）
+2. 等待活跃会话完成（默认 30 秒超时）
+3. 强制取消剩余会话并关闭数据库连接
+
+```bash
+# 自定义关闭超时
+go run ./cmd/server --shutdown-timeout 60s
+```
+
+### 配置示例
+
+完整服务器配置示例：
+
+```json
+{
+  "jwt_secret": "your-secret-key-here",
+  "jwt_expiry": "24h",
+  "default_provider": "dashscope",
+  "providers": {
+    "dashscope": {
+      "type": "dashscope",
+      "model": "qwen3.6-plus",
+      "api_key": "sk-sp-xxx",
+      "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
+    },
+    "openai": {
+      "type": "openai",
+      "model": "gpt-4.1-mini",
+      "api_key": "sk-xxx",
+      "base_url": "https://api.openai.com/v1"
+    }
+  },
+  "runtime": {
+    "max_steps": 8,
+    "step_timeout": "30s",
+    "memory_limit_mb": 256,
+    "verify_mode": "standard"
+  },
+  "server": {
+    "listen_addr": ":8080",
+    "max_active_sessions": 8,
+    "shutdown_timeout": "30s"
+  }
+}
+```
+
+### v4 不包含
+
+- **NO Web UI**: v4 仅提供 HTTP API，无人机界面
+- **NO WebSocket**: v4 仅支持 SSE 流式输出
+- **NO 事件回放**: SSE 重连仅接收未来事件
+- **NO GraphQL/JSON-RPC**: v4 仅使用 REST + SSE

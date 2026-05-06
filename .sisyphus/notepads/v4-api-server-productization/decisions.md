@@ -1,0 +1,6 @@
+- T6: Persist lifecycle semantics directly in `sessions` (`lifecycle_phase`, `is_active`, `is_terminal`, `is_resumable`) so server-side resume/inspect decisions do not depend on in-memory actors.
+- T6: Derive persisted lifecycle flags atomically from saved session status on every `SaveSession` write, keeping terminal/active/resumable transitions synchronized with the authoritative status row.
+- T8: Normalize OpenAI provider failures into stable classes (`authentication failed`, `transport failed`, `malformed response`, `request failed with status`) while preserving upstream message detail so fail-closed runtime errors stay deterministic without leaking provider-specific contracts.
+
+- T9: Reuse the OpenAI provider structure for Anthropic by centralizing request validation/response decoding, then classify retries only for transport and retryable HTTP statuses while preserving config-driven model/baseURL/apiKey precedence from provider construction.
+- T10: Keep shutdown verification aligned with existing API behavior rather than inventing a new status code: tests assert manager admission closes first, then new requests fail through the existing `internal_error/start session` mapping and active sessions persist interrupted terminal state.

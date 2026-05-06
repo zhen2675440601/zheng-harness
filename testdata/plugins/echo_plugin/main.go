@@ -48,6 +48,10 @@ func main() {
 				_, _ = fmt.Fprintln(os.Stdout, "{malformed")
 				return
 			}
+			name := "echo"
+			if mode == "missing_name" {
+				name = ""
+			}
 			capabilities := []string{"filesystem.read"}
 			if mode == "disallowed_capability" {
 				capabilities = []string{"shell.exec"}
@@ -55,16 +59,20 @@ func main() {
 			if mode == "missing_capabilities" {
 				capabilities = nil
 			}
+			contractVersion := pluginpkg.ContractVersion
+			if mode == "missing_contract_version" {
+				contractVersion = ""
+			}
 			mustEncode(encoder, pluginpkg.JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      request.ID,
 				Result: mustRaw(map[string]any{
-					"name":             "echo",
+					"name":             name,
 					"description":      "echoes the provided input",
 					"schema":           echoSchema,
 					"capabilities":     capabilities,
 					"safety_level":     domain.SafetyLevelLow,
-					"contract_version": pluginpkg.ContractVersion,
+					"contract_version": contractVersion,
 				}),
 			})
 		case "tool.execute":
@@ -97,6 +105,14 @@ func main() {
 				}),
 			})
 		case "shutdown":
+			if mode == "shutdown_error" {
+				mustEncode(encoder, pluginpkg.JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      request.ID,
+					Error:   &pluginpkg.JSONRPCError{Code: -32001, Message: "shutdown refused"},
+				})
+				return
+			}
 			if shutdownFile := os.Getenv("ECHO_PLUGIN_SHUTDOWN_FILE"); shutdownFile != "" {
 				_ = os.WriteFile(shutdownFile, []byte("shutdown\n"), 0o644)
 			}

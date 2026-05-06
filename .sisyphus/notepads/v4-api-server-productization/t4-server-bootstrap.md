@@ -1,0 +1,3 @@
+- 2026-05-06 T4 added a dedicated cmd/server bootstrap that loads shared config via runtimebuilder-filtered flags, constructs shared stores through runtimebuilder, enforces JWT secret presence, and wires Chi-based routing plus graceful HTTP/session-manager shutdown.
+- Server startup now requires SQLite WAL mode in the server path: stores are opened with WAL enabled and startup re-verifies journal_mode, failing closed if the database is not actually in WAL.
+- Because network fetch was unavailable in this environment, a minimal local chi/v5 compatibility shim was vendored under third_party with a go.mod replace so the new bootstrap can compile and tests can exercise GET /healthz without external downloads.

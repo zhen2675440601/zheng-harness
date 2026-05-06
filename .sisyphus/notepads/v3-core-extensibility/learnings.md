@@ -1,0 +1,22 @@
+- T3 host registries now own separate provider, verifier, and agent strategy namespaces instead of a generic cross-family map.
+- Built-ins are eagerly registered in NewManager/New*Registry constructors so lookup remains available even with no discovery path.
+- T2 plugin provenance can stay additive by normalizing metadata in `internal/domain` and persisting it in optional `provenance_json` columns while also mirroring session provenance into `config_json` for existing inspect metadata readers.
+- T2 shared plugin metadata validation works well with custom JSON marshal/unmarshal hooks so unknown families, unknown execution modes, and malformed semantic versions fail before persistence or resume.
+- T5 keeps built-in provider behavior unchanged by wrapping existing OpenAI/Anthropic/DashScope adapters behind a `ProviderPluginContract` with `ProviderID()` rather than rewriting generate/stream logic.
+- T5 routes `llm.NewProvider` through a replaceable default provider resolver so host-owned plugin registries can own selection while deterministic unsupported-provider failures remain testable at the `internal/llm` seam.
+- 2026-04-30: T7 kept built-in `provider` selection unchanged and added additive `plugin_provider` / `--plugin-provider` paths so plugin-backed IDs can be selected without rewriting existing `zheng.json` files.
+- 2026-04-30: Provider selection now fails deterministically whenever built-in and plugin-backed sources are mixed across config, env, or CLI, which avoids silent fallback between host-owned and plugin-backed IDs.
+- 2026-04-30: T10 moved TaskAwareVerifier dispatch behind an injected host-owned verifier registry seam while preserving category defaults and explicit policy normalization before any plugin-backed resolution.
+- 2026-04-30: T8 introduced a verify-owned `VerifierPluginContract` plus predeclared-policy registry so built-in command/evidence/state-output strategies resolve through the same seam while plugin bindings fail closed for unknown host policy IDs.
+
+- 2026-04-30: T9 wraps plugin-backed verifiers with host-side result validation so malformed, contradictory, timeout, and panic outcomes all fail closed while preserving verifier plugin provenance for persisted session/step inspect output.
+- 2026-04-30: T9 persists explicit verification status alongside verification reason in step storage so plugin-backed normalized results survive resume without losing passed/failed/not_applicable semantics.
+- 2026-04-30: T9 keeps verifier plugins constrained to predeclared host policy IDs by validating plugin metadata plus verifier contract version before registry registration, then preferring plugin overrides only through the verify-owned registry seam.
+- 2026-04-30: T13 keeps runtime/orchestration host-authoritative by letting agent strategy plugins choose plans/actions/worker instances only through validated host seams; tool execution, cancellation, DAG scheduling, verification, and session writes remain in host code paths.
+- 2026-04-30: Strategy provenance is now merged into session and step provenance at runtime start/step recording, which preserves inspect/readability even when a strategy plugin fails before any step is persisted.
+- 2026-04-30: T11 introduced a strategy-style runtime seam in `internal/runtime` where plugins only observe task/session/plan/step snapshots, memory, and host allowlisted tools, and may only return validated plan/action/observation decisions.
+- 2026-04-30: Built-in runtime planning now resolves through the same agent strategy registry seam, while host validation rejects forged tool results, non-allowlisted tool calls, and malformed contract metadata deterministically before any step persistence.
+
+- 2026-04-30: T12 made session provenance persistence additive by merging newly observed provider/verifier/agent plugin metadata with existing stored provenance, so older records remain readable and later plugin-backed steps do not erase earlier provenance snapshots.
+- 2026-04-30: T12 inspect/resume now trust persisted provenance instead of live plugin presence: inspect surfaces stored plugin metadata directly, while resume fails closed with deterministic family-specific errors when a required provider/verifier/agent plugin is unavailable or mismatched.
+- 2026-04-30: T12 extends the provider seam with provider metadata exposure so runtime can persist plugin-backed provider provenance end-to-end without changing built-in provider behavior or making inspect depend on plugin binaries still existing on disk.

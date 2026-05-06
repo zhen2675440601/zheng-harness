@@ -3,15 +3,17 @@
 基于 Harness Engineering 思想实现的 **通用 Agent Harness Engine** Go MVP。当前版本已完成通用任务协议扩展，并新增 streaming CLI 输出、新工具能力、插件系统与多 Agent 编排支持。
 
 **v1** 聚焦 **CLI-first、单进程、单代理、可验证、可恢复、可检查持久记忆**。  
-**v2** 新增 **streaming 实时输出、3 个新工具、双模式插件系统、多 Agent 编排**。
+**v2** 新增 **streaming 实时输出、3 个新工具、双模式插件系统、多 Agent 编排**。  
+**v3** 新增 **三家族插件系统 (provider/verifier/agent-strategy)、fail-closed 运行时、来源可追溯**。
+**v4** 新增 **HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider**。
 
 **定位**: 通用任务执行引擎，支持 coding、research、file workflow 等多种任务类型。
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成**
 
-核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证。详细进度请见 [PROGRESS.md](PROGRESS.md)。
+核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证；**v3 三家族插件系统、fail-closed 语义、fail-closed 运行时已验证**；**v4 HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider 已验证**。详细进度请见 [PROGRESS.md](PROGRESS.md)。
 
 验证状态见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
@@ -41,6 +43,103 @@
 - 有界并发控制 (默认 4 worker)
 - 结果聚合策略：AllSucceed/BestEffort
 - 取消传播与部分结果保留
+
+## v3 新增特性 (Extensibility)
+
+### 1. 三家族插件系统
+
+v3 定义了三个独立的插件家族，每个家族有自己的合约和加载语义：
+
+- **Provider 家族**: 抽象 LLM 后端差异 (模型 API、流式协议、token 计数)
+- **Verifier 家族**: 任务感知验证策略，检查证据并决定完成状态
+- **Agent Strategy 家族**: 替代默认 plan-execute-verify 循环的推理与动作选择策略
+
+每个插件家族支持双模式加载：
+- **外部进程**: JSON-RPC 2.0 over stdio，跨平台
+- **原生 Go 插件**: .so 文件加载 (Linux/macOS)
+
+### 2. Fail-Closed 运行时语义
+
+所有插件家族遵循 **fail-closed** 语义：
+- 当用户或持久化会话**显式选择**某个插件 provider / verifier / agent-strategy，而该插件缺失、版本不兼容或校验失败时，`run` / `resume` 会**确定性失败**，不会静默 fallback 到内置实现
+- 当未显式选择插件时，运行时仍默认使用内置实现；内置路径始终可用，零插件安装即可工作
+- 插件执行失败时，错误会被归因到对应插件并传达给宿主验证/持久化路径；运行时不会隐式切换到其他实现来掩盖错误
+- 插件崩溃不会导致宿主崩溃；失败会被记录，并保留可检查的 provenance 与历史
+
+### 3. 来源可追溯性
+
+所有插件调用都可审计：
+- 插件身份（名称、版本、来源路径）在会话历史中记录
+- 合约版本与每次工具调用一起持久化
+- 插件导致的失败包含插件身份的错误消息
+
+`inspect` 会直接展示已持久化的 provenance，即使原始插件二进制已不存在；`resume` 则会根据持久化 provenance 执行 fail-closed 校验，并在缺失/不匹配时返回确定性错误。
+
+### 4. 内置优先原则
+
+- 内置工具和 provider 始终为首选默认实现
+- 插件扩展但从不替换内置功能
+- 命名空间碰撞时，内置实现优先，插件被拒绝
+
+## v4 新增特性 (API Server)
+
+### 1. HTTP API 服务器
+
+v4 新增独立的 HTTP API 服务器入口点，与 CLI 并行存在：
+
+- **`cmd/server`**: 独立的 HTTP API 服务器二进制
+- **`cmd/agent`**: 保持原有的 CLI 入口点，行为不变
+- **双入口点设计**: CLI 和服务器共享底层 engine 组装逻辑
+
+### 2. 认证 REST 端点
+
+所有 API 端点需要 JWT 认证（`/healthz` 除外）：
+
+- `POST /api/v1/run`: 创建新会话并异步执行
+- `POST /api/v1/resume`: 恢复未完成的会话
+- `GET /api/v1/sessions/{id}/inspect`: 检查会话状态（无需活跃 actor）
+- `GET /api/v1/sessions/{id}/stream`: SSE 流式输出运行时事件
+- `GET /healthz`: 健康检查（无需认证）
+
+### 3. SSE 流式输出
+
+服务器通过 SSE (Server-Sent Events) 输出 6 种运行时事件：
+
+- `token_delta`: 增量模型输出
+- `tool_start` / `tool_end`: 工具调用生命周期
+- `step_complete`: 步骤完成事件
+- `error`: 错误事件
+- `session_complete`: 会话完成事件
+
+**断开语义**: 客户端断开 SSE 连接不会取消会话执行；重连仅接收未来事件（v4 无事件回放）。
+
+### 4. 会话并发执行
+
+- **Session-Actor 架构**: 每个活跃会话拥有独立的 goroutine 和 engine 实例
+- **并发限制**: 默认最多 8 个活跃会话（可配置），超出返回 429
+- **重复请求处理**: 对已运行会话的重复 resume 请求返回 409 Conflict
+- **优雅关闭**: 关闭时拒绝新请求，等待进行中会话完成或取消
+
+### 5. SQLite 并发强化
+
+- **WAL 模式**: 服务器路径显式启用 WAL 模式以支持并发写入
+- **并发测试**: 验证多会话并发写入时 inspect 仍可读取一致状态
+- **生命周期状态持久化**: 区分 queued/running/completed/failed/cancelled/resumable 状态
+
+### 6. OpenAI/Anthropic Provider 实现
+
+v4 完成了真实的 HTTP-backed provider 实现：
+
+- **OpenAI Provider**: 支持 `Generate` 和 `Stream` 路径
+- **Anthropic Provider**: 支持 `Generate` 和 `Stream` 路径
+- **错误标准化**: Provider 错误规范化为确定性运行时错误
+- **配置兼容性**: 保持现有的配置优先级和选择语义
+
+### 7. 安全与 Fail-Closed
+
+- **JWT 认证**: 所有 `/api/v1/*` 端点强制 JWT 认证
+- **Fail-Closed**: 插件缺失/超时/崩溃时返回确定性错误，不静默 fallback
+- **会话隔离**: 多会话并发执行时不共享可变状态
 
 ## 快速开始
 
@@ -82,6 +181,32 @@ go run ./cmd/agent run --task "inspect repository and propose next step" --task-
 ```
 
 Supported `--task-type` values: `coding`, `research`, `file_workflow`, `general`. Each routes to a task-specific verifier.
+
+### 4b. 启动 API 服务器 (v4+)
+
+```bash
+# 启动 HTTP API 服务器
+go run ./cmd/server --config ./zheng.json --addr :8080
+
+# 健康检查
+curl -sS http://127.0.0.1:8080/healthz
+
+# 运行新会话
+curl -sS -X POST http://127.0.0.1:8080/api/v1/run \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"task":"inspect repository and propose next step","task_type":"coding"}'
+
+# SSE 流式输出
+curl -N -H "Authorization: Bearer YOUR_TOKEN" \
+  http://127.0.0.1:8080/api/v1/sessions/<session-id>/stream
+
+# 检查会话状态
+curl -sS -H "Authorization: Bearer YOUR_TOKEN" \
+  http://127.0.0.1:8080/api/v1/sessions/<session-id>/inspect
+```
+
+API 服务器需要 JWT 认证配置。详见 [`docs/USAGE.md`](docs/USAGE.md) API 服务器章节。
 
 ### 5. 查看详细使用说明
 
@@ -164,6 +289,12 @@ go run ./cmd/agent run \
 
 配置优先级为：**CLI flags > 环境变量 > 配置文件 > 默认值**。
 
+对于 provider 选择：
+
+- `--provider <built-in-id>` 用于选择内置 provider
+- `--plugin-provider <plugin-id>` 用于选择插件 provider
+- 若配置文件中的 `plugin_provider` 与 CLI 的 `--provider` / `--plugin-provider` 冲突，CLI 会直接报错，不会隐式兜底
+
 ### 恢复会话
 
 ```bash
@@ -178,6 +309,8 @@ go run ./cmd/agent resume --session session-1710000000000000000 --stream
 ```bash
 go run ./cmd/agent inspect --session session-1710000000000000000 --json
 ```
+
+若该会话使用过插件，`inspect` 输出会包含持久化的 `provenance`；这一步不依赖实时加载插件，因此历史始终可读。
 
 默认 SQLite 数据文件位置是当前工作目录下的 `./agent.db`。
 
@@ -276,12 +409,18 @@ zheng-harness/
 
 ## 当前仍不包含
 
-- Web UI
+- Web UI (v5 规划中)
 - Slack / Telegram / Discord 等网关
 - 向量数据库、embedding 检索、知识图谱
-- Provider / agent / verifier 插件（v2 仅支持 tool plugins）
+- 插件市场 / 发现服务
+- WebSocket 传输 (v4 仅支持 SSE)
+- 递归 Agent（深度=1 为上限）
 
 **v2 已实现**: 多代理编排 (orchestrator-worker)、插件系统 (双模式：外部进程 + 原生 Go 插件)、streaming 输出、新工具 (web_fetch, ask_user, code_search)。
+
+**v3 已实现**: 三家族插件系统 (provider/verifier/agent-strategy)、fail-closed 运行时、来源可追溯性、内置优先原则。
+
+**v4 已实现**: HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider、SQLite WAL 模式、JWT 认证。
 
 ## ADR 索引
 
@@ -290,6 +429,9 @@ zheng-harness/
 - [ADR-003: No Plugin System in v1](docs/ADR-003-no-plugin-system.md)
 - [ADR-004: No Vector Database for MVP Memory](docs/ADR-004-no-vector-db.md)
 - [ADR-005: Test-Driven Development First](docs/ADR-005-tdd-first.md)
+- [ADR-006: Streaming Runtime Architecture](docs/ADR-006-streaming-architecture.md)
+- [ADR-007: Plugin System Architecture](docs/ADR-007-plugin-system.md)
+- [ADR-008: v3 Extensibility Boundaries and Plugin Family Contracts](docs/ADR-008-v3-extensibility.md)
 
 ## 许可证
 
