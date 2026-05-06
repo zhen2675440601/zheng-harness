@@ -304,3 +304,93 @@ func TestLoadTaskFallsBackForLegacySessionsWithoutMetadata(t *testing.T) {
 		t.Fatalf("loaded task category = %q, want %q", loadedTask.Category, domain.TaskCategoryGeneral)
 	}
 }
+
+func TestResumeEligibilityUsesPersistedLifecycleState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "resume-eligibility.db")
+
+	sessionStore, err := store.NewSQLiteSessionStoreWithOptions(dbPath, store.SQLiteOptions{EnableWAL: true})
+	if err != nil {
+		t.Fatalf("NewSQLiteSessionStoreWithOptions() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sessionStore.Close() })
+
+	now := time.Date(2026, time.May, 1, 9, 0, 0, 0, time.UTC)
+	basePlan := domain.Plan{ID: "plan-resume", TaskID: "resume-task", Summary: "resume task summary", CreatedAt: now}
+
+	if err := sessionStore.SavePlan(ctx, basePlan); err != nil {
+		t.Fatalf("SavePlan() error = %v", err)
+	}
+
+	testCases := []struct {
+		name           string
+		session        domain.Session
+		wantPhase      store.SessionLifecyclePhase
+		wantActive     bool
+		wantTerminal   bool
+		wantResumable  bool
+		wantResumeErr  bool
+	}{
+		{name: "pending queued resumable", session: domain.Session{ID: "pending-session", TaskID: "resume-task", Status: domain.SessionStatusPending, CreatedAt: now, UpdatedAt: now}, wantPhase: store.SessionLifecycleQueued, wantResumable: true},
+		{name: "running active not resumable", session: domain.Session{ID: "running-session", TaskID: "resume-task", Status: domain.SessionStatusRunning, CreatedAt: now, UpdatedAt: now}, wantPhase: store.SessionLifecycleRunning, wantActive: true, wantResumeErr: true},
+		{name: "interrupted cancelled resumable", session: domain.Session{ID: "interrupted-session", TaskID: "resume-task", Status: domain.SessionStatusInterrupted, CreatedAt: now, UpdatedAt: now}, wantPhase: store.SessionLifecycleCancelled, wantResumable: true},
+		{name: "success completed terminal", session: domain.Session{ID: "success-session", TaskID: "resume-task", Status: domain.SessionStatusSuccess, CreatedAt: now, UpdatedAt: now}, wantPhase: store.SessionLifecycleCompleted, wantTerminal: true, wantResumeErr: true},
+		{name: "fatal failed terminal", session: domain.Session{ID: "fatal-session", TaskID: "resume-task", Status: domain.SessionStatusFatalError, CreatedAt: now, UpdatedAt: now}, wantPhase: store.SessionLifecycleFailed, wantTerminal: true, wantResumeErr: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := sessionStore.SaveSession(ctx, tc.session); err != nil {
+				t.Fatalf("SaveSession() error = %v", err)
+			}
+			inspect, err := sessionStore.InspectSession(ctx, tc.session.ID)
+			if err != nil {
+				t.Fatalf("InspectSession() error = %v", err)
+			}
+			if inspect.Lifecycle.Phase != tc.wantPhase {
+				t.Fatalf("lifecycle phase = %q, want %q", inspect.Lifecycle.Phase, tc.wantPhase)
+			}
+			if inspect.Lifecycle.Active != tc.wantActive {
+				t.Fatalf("lifecycle active = %v, want %v", inspect.Lifecycle.Active, tc.wantActive)
+			}
+			if inspect.Lifecycle.Terminal != tc.wantTerminal {
+				t.Fatalf("lifecycle terminal = %v, want %v", inspect.Lifecycle.Terminal, tc.wantTerminal)
+			}
+			if inspect.Lifecycle.Resumable != tc.wantResumable {
+				t.Fatalf("lifecycle resumable = %v, want %v", inspect.Lifecycle.Resumable, tc.wantResumable)
+			}
+			_, _, _, err = sessionStore.ResumeSession(ctx, tc.session.ID)
+			if err != nil {
+				t.Fatalf("ResumeSession() state load error = %v", err)
+			}
+			if tc.wantResumeErr == inspect.Lifecycle.Resumable {
+				t.Fatalf("resume policy mismatch: wantResumeErr=%v lifecycle=%#v", tc.wantResumeErr, inspect.Lifecycle)
+			}
+		})
+	}
+
+	resumable := domain.Session{ID: "transition-session", TaskID: "resume-task", Status: domain.SessionStatusRunning, CreatedAt: now, UpdatedAt: now}
+	if err := sessionStore.SaveSession(ctx, resumable); err != nil {
+		t.Fatalf("SaveSession(running) error = %v", err)
+	}
+	if err := sessionStore.SaveTask(ctx, resumable.ID, domain.Task{ID: resumable.TaskID, Description: "transition", Goal: "transition", Category: domain.TaskCategoryCoding, CreatedAt: now}); err != nil {
+		t.Fatalf("SaveTask(running) error = %v", err)
+	}
+	resumable.Status = domain.SessionStatusInterrupted
+	resumable.UpdatedAt = now.Add(time.Minute)
+	if err := sessionStore.SaveSession(ctx, resumable); err != nil {
+		t.Fatalf("SaveSession(interrupted) error = %v", err)
+	}
+	if err := sessionStore.SaveTask(ctx, resumable.ID, domain.Task{ID: resumable.TaskID, Description: "transition updated", Goal: "transition updated", Category: domain.TaskCategoryCoding, CreatedAt: now}); err != nil {
+		t.Fatalf("SaveTask(interrupted) error = %v", err)
+	}
+	inspect, err := sessionStore.InspectSession(ctx, resumable.ID)
+	if err != nil {
+		t.Fatalf("InspectSession(transition) error = %v", err)
+	}
+	if inspect.Lifecycle.Phase != store.SessionLifecycleCancelled || !inspect.Lifecycle.Resumable || inspect.Lifecycle.Active {
+		t.Fatalf("transition lifecycle = %#v, want cancelled resumable inactive", inspect.Lifecycle)
+	}
+}

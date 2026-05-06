@@ -3,10 +3,13 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"zheng-harness/internal/domain"
@@ -138,7 +141,7 @@ func TestPluginManagerCloseAll(t *testing.T) {
 	}
 }
 
-func TestPluginManagerVersionValidation(t *testing.T) {
+func TestPluginVersionMismatchFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	plugin := &stubManagerPlugin{name: "bad-version", contractVersion: "0.9.0"}
@@ -159,6 +162,70 @@ func TestPluginManagerVersionValidation(t *testing.T) {
 	}
 	if len(manager.LoadedPlugins) != 0 {
 		t.Fatalf("LoadedPlugins len = %d, want 0", len(manager.LoadedPlugins))
+	}
+}
+
+func TestPluginLoadCleanupOnFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		policy  tools.SafetyPolicy
+		plugin  *stubManagerPlugin
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name:    "contract version mismatch",
+			plugin:  &stubManagerPlugin{name: "bad-version", contractVersion: "0.9.0", capabilities: []string{"filesystem.read"}},
+			wantErr: ErrContractVersionMismatch,
+		},
+		{
+			name:    "capability rejection",
+			policy:  tools.SafetyPolicy{PluginCapabilities: []string{"filesystem.read"}},
+			plugin:  &stubManagerPlugin{name: "restricted", contractVersion: ContractVersion, capabilities: []string{"shell.exec"}},
+			wantMsg: `plugin capability "shell.exec" is not allowed`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager := NewManager(t.TempDir())
+			manager.Policy = tc.policy
+			healthy := &stubManagerPlugin{name: "healthy", contractVersion: ContractVersion, capabilities: []string{"filesystem.read"}}
+			manager.LoadedPlugins[healthy.Name()] = healthy
+			manager.externalLoad = func(_ context.Context, _ string) (PluginTool, error) {
+				return tc.plugin, nil
+			}
+
+				_, err := manager.Load(context.Background(), filepath.Join(manager.DiscoveryPath, tc.plugin.Name()))
+				if err == nil {
+					t.Fatal("expected Load() error")
+				}
+				if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+					t.Fatalf("Load() error = %v, want %v", err, tc.wantErr)
+				}
+				if tc.wantMsg != "" && !strings.Contains(err.Error(), tc.wantMsg) {
+					t.Fatalf("Load() error = %v, want message containing %q", err, tc.wantMsg)
+				}
+				if !tc.plugin.closed {
+					t.Fatal("Load() did not close failed plugin")
+				}
+				if tc.plugin.closeCalls != 1 {
+					t.Fatalf("failed plugin close calls = %d, want 1", tc.plugin.closeCalls)
+				}
+				if len(manager.LoadedPlugins) != 1 {
+					t.Fatalf("LoadedPlugins len = %d, want 1", len(manager.LoadedPlugins))
+				}
+				if manager.LoadedPlugins[healthy.Name()] != healthy {
+					t.Fatal("healthy plugin registration changed after failed load")
+				}
+				if _, exists := manager.LoadedPlugins[tc.plugin.Name()]; exists {
+					t.Fatalf("failed plugin %q remained registered", tc.plugin.Name())
+				}
+		})
 	}
 }
 
@@ -206,6 +273,61 @@ func TestPluginManagerRejectsPluginWithoutDeclaredCapabilitiesWhenPolicyConfigur
 	}
 	if !plugin.closed {
 		t.Fatal("Load() did not close plugin missing capability declaration")
+	}
+	if len(manager.LoadedPlugins) != 0 {
+		t.Fatalf("LoadedPlugins len = %d, want 0", len(manager.LoadedPlugins))
+	}
+}
+
+func TestPluginConcurrentLoadUnload(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(t.TempDir())
+	var sequence atomic.Int64
+	manager.externalLoad = func(_ context.Context, path string) (PluginTool, error) {
+		id := sequence.Add(1)
+		return &stubManagerPlugin{
+			name:            fmt.Sprintf("%s-%d", filepath.Base(path), id),
+			contractVersion: ContractVersion,
+			capabilities:    []string{"filesystem.read"},
+		}, nil
+	}
+
+	const goroutines = 8
+	const iterations = 20
+
+	errCh := make(chan error, goroutines)
+	var wg sync.WaitGroup
+	for worker := range goroutines {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := range iterations {
+				path := filepath.Join(manager.DiscoveryPath, fmt.Sprintf("plugin-%d-%d", worker, i))
+				if _, err := manager.Load(context.Background(), path); err != nil {
+					errCh <- fmt.Errorf("load worker=%d iteration=%d: %w", worker, i, err)
+					return
+				}
+				if i%3 == 0 {
+					if err := manager.CloseAll(); err != nil {
+						errCh <- fmt.Errorf("close worker=%d iteration=%d: %w", worker, i, err)
+						return
+					}
+				}
+			}
+		}(worker)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := manager.CloseAll(); err != nil {
+		t.Fatalf("final CloseAll() error = %v", err)
 	}
 	if len(manager.LoadedPlugins) != 0 {
 		t.Fatalf("LoadedPlugins len = %d, want 0", len(manager.LoadedPlugins))

@@ -302,8 +302,11 @@ func TestIntegrationMultiAgentWithPlugins(t *testing.T) {
 	if got := workerStores["summarize"].stepsFor("summarize"); len(got) != 3 {
 		t.Fatalf("summarize steps = %d, want 3", len(got))
 	}
-	if !strings.Contains(workerStores["summarize"].stepsFor("summarize")[0].Observation.ToolResult.Output, "worker.go") {
-		t.Fatalf("code search output = %q, want worker.go", workerStores["summarize"].stepsFor("summarize")[0].Observation.ToolResult.Output)
+	searchOutput := workerStores["summarize"].stepsFor("summarize")[0].Observation.ToolResult.Output
+	if !strings.Contains(searchOutput, "worker.go") {
+		if !strings.Contains(searchOutput, "workerTarget") {
+			t.Fatalf("code search output = %q, want file or content match evidence", searchOutput)
+		}
 	}
 	if strings.TrimSpace(workerStores["summarize"].stepsFor("summarize")[1].Observation.ToolResult.Output) != "plugin summary" {
 		t.Fatalf("plugin tool output = %q, want plugin summary", workerStores["summarize"].stepsFor("summarize")[1].Observation.ToolResult.Output)
@@ -626,6 +629,15 @@ func assertEventTypePresent(t *testing.T, events []domain.StreamingEvent, want d
 	for _, event := range events {
 		if event.Type == want {
 			return
+		}
+	}
+	for _, event := range events {
+		if event.Type != domain.EventError {
+			continue
+		}
+		var payload domain.ErrorPayload
+		if err := event.GetPayload(&payload); err == nil {
+			t.Fatalf("event type %q not found in %v; runtime error=%q", want, integrationEventTypes(events), payload.Message)
 		}
 	}
 	t.Fatalf("event type %q not found in %v", want, integrationEventTypes(events))

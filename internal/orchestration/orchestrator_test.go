@@ -10,6 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"zheng-harness/internal/domain"
+	runtimeengine "zheng-harness/internal/runtime"
 )
 
 func TestOrchestratorBoundedConcurrency(t *testing.T) {
@@ -308,6 +311,177 @@ func TestOrchestratorAllSucceed(t *testing.T) {
 	}
 	if orch.MaxWorkers != defaultMaxWorkers {
 		t.Fatalf("MaxWorkers = %d, want %d", orch.MaxWorkers, defaultMaxWorkers)
+	}
+}
+
+func TestAgentStrategyPluginCancellationPropagation(t *testing.T) {
+	t.Parallel()
+
+	decomposition := TaskDecomposition{TaskID: "task-cancel-strategy", Subtasks: []Subtask{{ID: "a", Description: "a", Status: SubtaskStatusPending}}}
+	started := make(chan struct{})
+	registry := runtimeengine.NewAgentStrategyRegistry()
+	if err := registry.Register(runtimeengine.BuiltinAgentStrategyHostDefault, func() (runtimeengine.AgentStrategyPlugin, error) {
+		return orchestrationStrategyStub{
+			metadata: validOrchestrationStrategyMetadata(runtimeengine.BuiltinAgentStrategyHostDefault),
+			selectWorkerFn: func(ctx context.Context, input AgentStrategyWorkerSelection) (AgentStrategyWorkerDecision, error) {
+				close(started)
+				<-ctx.Done()
+				return AgentStrategyWorkerDecision{}, ctx.Err()
+			},
+		}, nil
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	orch := Orchestrator{
+		MaxWorkers:      1,
+		AgentStrategies: registry,
+		WorkerFactory: func(subtask Subtask) Worker {
+			return NewWorker(func(context.Context, Subtask, TaskDecomposition) error { return nil })
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := orch.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := orch.SubmitTask(context.Background(), decomposition); err != nil {
+		t.Fatalf("SubmitTask() error = %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("strategy did not start")
+	}
+	cancel()
+	if err := orch.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	results := collectResults(orch.ResultChannel)
+	if len(results) != 1 {
+		t.Fatalf("result count = %d, want 1", len(results))
+	}
+	if !errors.Is(results[0].Err, context.Canceled) {
+		t.Fatalf("result err = %v, want context canceled", results[0].Err)
+	}
+}
+
+func TestAgentStrategyPluginCannotSpawnRecursiveWorkers(t *testing.T) {
+	t.Parallel()
+
+	decomposition := TaskDecomposition{TaskID: "task-recursive", Subtasks: []Subtask{{ID: "a", Description: "a", Status: SubtaskStatusPending}}}
+	registry := runtimeengine.NewAgentStrategyRegistry()
+	if err := registry.Register(runtimeengine.BuiltinAgentStrategyHostDefault, func() (runtimeengine.AgentStrategyPlugin, error) {
+		return orchestrationStrategyStub{
+			metadata: validOrchestrationStrategyMetadata(runtimeengine.BuiltinAgentStrategyHostDefault),
+			selectWorkerFn: func(context.Context, AgentStrategyWorkerSelection) (AgentStrategyWorkerDecision, error) {
+				return AgentStrategyWorkerDecision{SpawnSubtasks: []Subtask{{ID: "child", Description: "child", Status: SubtaskStatusPending}}}, nil
+			},
+		}, nil
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	orch := Orchestrator{
+		MaxWorkers:      1,
+		AgentStrategies: registry,
+		WorkerFactory: func(subtask Subtask) Worker {
+			return NewWorker(func(context.Context, Subtask, TaskDecomposition) error { return nil })
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orch.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := orch.SubmitTask(ctx, decomposition); err != nil {
+		t.Fatalf("SubmitTask() error = %v", err)
+	}
+	orch.Stop()
+	err := orch.Wait()
+	if !errors.Is(err, ErrRecursiveWorkerSpawnNotAllowed) {
+		t.Fatalf("Wait() error = %v, want %v", err, ErrRecursiveWorkerSpawnNotAllowed)
+	}
+	results := collectResults(orch.ResultChannel)
+	if len(results) != 1 {
+		t.Fatalf("result count = %d, want 1", len(results))
+	}
+	if !errors.Is(results[0].Err, ErrRecursiveWorkerSpawnNotAllowed) {
+		t.Fatalf("result err = %v, want %v", results[0].Err, ErrRecursiveWorkerSpawnNotAllowed)
+	}
+}
+
+func TestAgentStrategyPluginFailureIsolation(t *testing.T) {
+	t.Parallel()
+
+	decomposition := TaskDecomposition{TaskID: "task-fail-strategy", Subtasks: []Subtask{{ID: "a", Description: "a", Status: SubtaskStatusPending}}}
+	boom := errors.New("strategy worker selection failed")
+	registry := runtimeengine.NewAgentStrategyRegistry()
+	if err := registry.Register(runtimeengine.BuiltinAgentStrategyHostDefault, func() (runtimeengine.AgentStrategyPlugin, error) {
+		return orchestrationStrategyStub{
+			metadata: validOrchestrationStrategyMetadata(runtimeengine.BuiltinAgentStrategyHostDefault),
+			selectWorkerFn: func(context.Context, AgentStrategyWorkerSelection) (AgentStrategyWorkerDecision, error) {
+				return AgentStrategyWorkerDecision{}, boom
+			},
+		}, nil
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	orch := Orchestrator{
+		MaxWorkers:      1,
+		AgentStrategies: registry,
+		WorkerFactory: func(subtask Subtask) Worker {
+			return NewWorker(func(context.Context, Subtask, TaskDecomposition) error { return nil })
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orch.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := orch.SubmitTask(ctx, decomposition); err != nil {
+		t.Fatalf("SubmitTask() error = %v", err)
+	}
+	orch.Stop()
+	err := orch.Wait()
+	if !errors.Is(err, boom) {
+		t.Fatalf("Wait() error = %v, want %v", err, boom)
+	}
+	if len(orch.Workers) != 0 {
+		t.Fatalf("workers still registered = %d, want 0", len(orch.Workers))
+	}
+}
+
+type orchestrationStrategyStub struct {
+	metadata       domain.PluginMetadata
+	selectWorkerFn func(context.Context, AgentStrategyWorkerSelection) (AgentStrategyWorkerDecision, error)
+}
+
+func (s orchestrationStrategyStub) Metadata() domain.PluginMetadata { return s.metadata }
+func (s orchestrationStrategyStub) CreatePlan(context.Context, runtimeengine.AgentPlanContext) (runtimeengine.AgentPlanDecision, error) {
+	return runtimeengine.AgentPlanDecision{}, nil
+}
+func (s orchestrationStrategyStub) NextAction(context.Context, runtimeengine.AgentActionContext) (runtimeengine.AgentActionDecision, error) {
+	return runtimeengine.AgentActionDecision{}, nil
+}
+func (s orchestrationStrategyStub) Observe(context.Context, runtimeengine.AgentObservationContext) (runtimeengine.AgentObservationDecision, error) {
+	return runtimeengine.AgentObservationDecision{}, nil
+}
+func (s orchestrationStrategyStub) SelectWorker(ctx context.Context, input AgentStrategyWorkerSelection) (AgentStrategyWorkerDecision, error) {
+	if s.selectWorkerFn == nil {
+		return AgentStrategyWorkerDecision{}, nil
+	}
+	return s.selectWorkerFn(ctx, input)
+}
+
+func validOrchestrationStrategyMetadata(id string) domain.PluginMetadata {
+	return domain.PluginMetadata{
+		Family:                domain.PluginFamilyAgentStrategy,
+		LogicalID:             id,
+		DisplayName:           "Orchestration Strategy Plugin",
+		ContractVersion:       runtimeengine.AgentStrategyPluginContractVersion,
+		ImplementationVersion: "1.0.0",
+		ExecutionMode:         domain.PluginExecutionModeExternal,
+		SourcePath:            "/plugins/orchestration-strategy",
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,8 +17,10 @@ import (
 
 	"zheng-harness/internal/config"
 	"zheng-harness/internal/domain"
+	"zheng-harness/internal/llm"
 	pluginruntime "zheng-harness/internal/plugin"
 	"zheng-harness/internal/runtime"
+	"zheng-harness/internal/runtimebuilder"
 	"zheng-harness/internal/store"
 	"zheng-harness/internal/tools"
 	"zheng-harness/internal/verify"
@@ -115,6 +118,9 @@ func TestResumeAndInspectOutput(t *testing.T) {
 	if got := resumeStdout.String(); !strings.Contains(got, "Resumed session: "+runPayload.SessionID) || !strings.Contains(got, "History:") {
 		t.Fatalf("resume output missing expected fields:\n%s", got)
 	}
+	if strings.Contains(resumeStdout.String(), "plugin ") {
+		t.Fatalf("resume output unexpectedly showed provenance for non-plugin session:\n%s", resumeStdout.String())
+	}
 	if strings.Contains(resumeStdout.String(), runPayload.SessionID+"-session") {
 		t.Fatalf("resume output leaked runtime session id:\n%s", resumeStdout.String())
 	}
@@ -152,6 +158,218 @@ func TestResumeAndInspectOutput(t *testing.T) {
 	}
 	if !strings.Contains(inspectPayload.StepSummaries[0], "step 1:") {
 		t.Fatalf("inspect summary = %q, want stable step prefix", inspectPayload.StepSummaries[0])
+	}
+}
+
+func TestInspectDisplaysPersistedPluginProvenanceWithoutLivePlugin(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	sessionStore, err := store.NewSQLiteSessionStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteSessionStore() error = %v", err)
+	}
+	defer func() { _ = sessionStore.Close() }()
+
+	ctx := context.Background()
+	now := time.Date(2026, time.April, 30, 12, 0, 0, 0, time.UTC)
+	provenance := &domain.Provenance{Plugins: []domain.PluginMetadata{{
+		Family:                domain.PluginFamilyProvider,
+		LogicalID:             "acme/provider",
+		DisplayName:           "Acme Provider",
+		ContractVersion:       "1.0.0",
+		ImplementationVersion: "2.0.0",
+		ExecutionMode:         domain.PluginExecutionModeExternal,
+		SourcePath:            "plugins/provider-acme",
+	}}}
+	if err := sessionStore.SaveSession(ctx, domain.Session{ID: "session-provenance", TaskID: "task-provenance", Status: domain.SessionStatusSuccess, Provenance: provenance, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	if err := sessionStore.SavePlan(ctx, domain.Plan{ID: "plan-provenance", TaskID: "task-provenance", Summary: "inspect persisted plugin provenance", CreatedAt: now}); err != nil {
+		t.Fatalf("SavePlan() error = %v", err)
+	}
+	if err := sessionStore.AppendStep(ctx, "session-provenance", domain.Step{Index: 1, Action: domain.Action{Type: domain.ActionTypeRespond, Summary: "persisted step"}, Observation: domain.Observation{Summary: "done", FinalResponse: "done"}, Verification: domain.VerificationResult{Passed: true, Status: domain.VerificationStatusPassed, Reason: "done"}, Provenance: provenance}); err != nil {
+		t.Fatalf("AppendStep() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"inspect", "--session", "session-provenance", "--db", dbPath, "--json"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("inspect exit code = %d, stderr=%s", exitCode, stderr.String())
+	}
+	var payload inspectJSONOutput
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload.Provenance == nil || len(payload.Provenance.Plugins) != 1 {
+		t.Fatalf("inspect provenance = %#v, want persisted plugin provenance", payload.Provenance)
+	}
+	if payload.Provenance.Plugins[0].LogicalID != "acme/provider" {
+		t.Fatalf("inspect provenance logical id = %q, want acme/provider", payload.Provenance.Plugins[0].LogicalID)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestResumeFailsClosedWhenPersistedProviderPluginUnavailable(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	sessionStore, err := store.NewSQLiteSessionStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteSessionStore() error = %v", err)
+	}
+	defer func() { _ = sessionStore.Close() }()
+
+	ctx := context.Background()
+	now := time.Date(2026, time.April, 30, 12, 5, 0, 0, time.UTC)
+	provenance := &domain.Provenance{Plugins: []domain.PluginMetadata{{
+		Family:                domain.PluginFamilyProvider,
+		LogicalID:             "acme/provider",
+		DisplayName:           "Acme Provider",
+		ContractVersion:       "1.0.0",
+		ImplementationVersion: "2.0.0",
+		ExecutionMode:         domain.PluginExecutionModeExternal,
+		SourcePath:            "plugins/provider-acme",
+	}}}
+	if err := sessionStore.SaveSession(ctx, domain.Session{ID: "session-resume-provider", TaskID: "task-resume-provider", Status: domain.SessionStatusRunning, Provenance: provenance, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	if err := sessionStore.SavePlan(ctx, domain.Plan{ID: "plan-resume-provider", TaskID: "task-resume-provider", Summary: "resume persisted provider plugin", CreatedAt: now}); err != nil {
+		t.Fatalf("SavePlan() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"resume", "--session", "session-resume-provider", "--db", dbPath}, &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("resume exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "resume fail-closed") || !strings.Contains(stderr.String(), "acme/provider") {
+		t.Fatalf("stderr = %q, want deterministic fail-closed provider error", stderr.String())
+	}
+
+	resumed, _, _, err := sessionStore.ResumeSession(ctx, "session-resume-provider")
+	if err != nil {
+		t.Fatalf("ResumeSession() after failed resume error = %v", err)
+	}
+	if resumed.Provenance == nil || resumed.Provenance.Plugins[0].LogicalID != "acme/provider" {
+		t.Fatalf("persisted provenance mutated after failed resume: %#v", resumed.Provenance)
+	}
+}
+
+func TestResumeFailsClosedWhenPersistedVerifierPluginUnavailable(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	sessionStore, err := store.NewSQLiteSessionStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteSessionStore() error = %v", err)
+	}
+	defer func() { _ = sessionStore.Close() }()
+
+	ctx := context.Background()
+	now := time.Date(2026, time.April, 30, 12, 10, 0, 0, time.UTC)
+	provenance := &domain.Provenance{Plugins: []domain.PluginMetadata{{
+		Family:                domain.PluginFamilyVerifier,
+		LogicalID:             "evidence-plugin",
+		DisplayName:           "Evidence Plugin",
+		ContractVersion:       verify.VerifierPluginContractVersion,
+		ImplementationVersion: "2.0.0",
+		ExecutionMode:         domain.PluginExecutionModeExternal,
+		SourcePath:            "plugins/evidence-plugin",
+	}}}
+	if err := sessionStore.SaveSession(ctx, domain.Session{ID: "session-resume-verifier", TaskID: "task-resume-verifier", Status: domain.SessionStatusRunning, Provenance: provenance, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	if err := sessionStore.SaveTask(ctx, "session-resume-verifier", domain.Task{ID: "task-resume-verifier", Description: "resume verifier", Goal: "resume verifier", VerificationPolicy: verify.PolicyEvidenceBased, CreatedAt: now}); err != nil {
+		t.Fatalf("SaveTask() error = %v", err)
+	}
+	if err := sessionStore.SavePlan(ctx, domain.Plan{ID: "plan-resume-verifier", TaskID: "task-resume-verifier", Summary: "resume persisted verifier plugin", CreatedAt: now}); err != nil {
+		t.Fatalf("SavePlan() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"resume", "--session", "session-resume-verifier", "--db", dbPath}, &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("resume exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "resume fail-closed") || !strings.Contains(stderr.String(), "evidence-plugin") {
+		t.Fatalf("stderr = %q, want deterministic fail-closed verifier error", stderr.String())
+	}
+}
+
+func TestRuntimePersistsProviderPluginProvenanceEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	previous := llm.DefaultProviderResolver()
+	resolver := &providerResolverStub{provider: &providerPluginStub{id: "acme/provider", name: "Acme Provider", metadata: domain.PluginMetadata{
+		Family:                domain.PluginFamilyProvider,
+		LogicalID:             "acme/provider",
+		DisplayName:           "Acme Provider",
+		ContractVersion:       "1.0.0",
+		ImplementationVersion: "2.0.0",
+		ExecutionMode:         domain.PluginExecutionModeExternal,
+		SourcePath:            "plugins/provider-acme",
+	}}}
+	llm.SetDefaultProviderResolver(resolver)
+	defer llm.SetDefaultProviderResolver(previous)
+
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "acme/provider",
+		"plugin_provider": "acme/provider",
+		"providers": {
+			"acme/provider": {
+				"type": "plugin",
+				"model": "plugin-model",
+				"api_key": "secret"
+			}
+		},
+		"runtime": {
+			"max_steps": 4,
+			"step_timeout": "30s",
+			"memory_limit_mb": 256,
+			"verify_mode": "off"
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"run", "--task", "persist provider provenance", "--config", configPath, "--db", dbPath, "--json"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("run exit code = %d, stderr=%s", exitCode, stderr.String())
+	}
+	var payload runJSONOutput
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	reopenedStore, err := store.NewSQLiteSessionStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteSessionStore(reopen) error = %v", err)
+	}
+	defer func() { _ = reopenedStore.Close() }()
+	session, _, steps, err := reopenedStore.ResumeSession(context.Background(), payload.SessionID)
+	if err != nil {
+		t.Fatalf("ResumeSession() error = %v", err)
+	}
+	if session.Provenance == nil || len(session.Provenance.Plugins) != 1 {
+		t.Fatalf("session provenance = %#v, want provider plugin persisted", session.Provenance)
+	}
+	if len(steps) != 1 || steps[0].Provenance == nil || len(steps[0].Provenance.Plugins) != 1 {
+		t.Fatalf("step provenance = %#v, want provider plugin persisted", steps)
+	}
+	if session.Provenance.Plugins[0].LogicalID != "acme/provider" {
+		t.Fatalf("session provider provenance = %q, want acme/provider", session.Provenance.Plugins[0].LogicalID)
+	}
+	if resolver.calls == 0 {
+		t.Fatal("expected provider resolver to be used")
 	}
 }
 
@@ -354,6 +572,222 @@ func TestRunCLIUsesProviderAdapterForOpenAI(t *testing.T) {
 	}
 	if payload.Status != domain.SessionStatusSuccess {
 		t.Fatalf("status = %q, want success (FakeModel fallback)", payload.Status)
+	}
+}
+
+func TestPluginSelectionBuiltInProviderCompatibility(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "openai",
+		"providers": {
+			"openai": {
+				"type": "openai",
+				"model": "gpt-4.1-mini"
+			}
+		},
+		"runtime": {
+			"max_steps": 4,
+			"step_timeout": "30s",
+			"memory_limit_mb": 256,
+			"verify_mode": "off"
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"run", "--task", "inspect repository", "--config", configPath, "--db", dbPath, "--json"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0, stderr=%s", exitCode, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestPluginSelectionSupportsExplicitPluginProvider(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "openai",
+		"providers": {
+			"openai": {
+				"type": "openai",
+				"model": "gpt-4.1-mini"
+			},
+			"acme/provider": {
+				"type": "plugin",
+				"model": "plugin-model"
+			}
+		},
+		"runtime": {
+			"max_steps": 4,
+			"step_timeout": "30s",
+			"memory_limit_mb": 256,
+			"verify_mode": "off"
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loaded, err := config.Load([]string{"-config", configPath, "-plugin-provider", "acme/provider"})
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	if loaded.Provider != "acme/provider" {
+		t.Fatalf("provider = %q, want acme/provider", loaded.Provider)
+	}
+	if loaded.PluginProvider != "acme/provider" {
+		t.Fatalf("plugin provider = %q, want acme/provider", loaded.PluginProvider)
+	}
+	if loaded.GetProviderType() != config.ProviderPlugin {
+		t.Fatalf("provider type = %q, want %q", loaded.GetProviderType(), config.ProviderPlugin)
+	}
+}
+
+func TestRunFailsClosedForExplicitPluginProviderWithoutAPIKey(t *testing.T) {
+	// 注意：该测试依赖全局 provider resolver 的默认行为，不能并行执行。
+
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	previous := llm.DefaultProviderResolver()
+	llm.SetDefaultProviderResolver(nil)
+	defer llm.SetDefaultProviderResolver(previous)
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "acme/provider",
+		"plugin_provider": "acme/provider",
+		"providers": {
+			"acme/provider": {
+				"type": "plugin",
+				"model": "plugin-model"
+			}
+		},
+		"runtime": {
+			"max_steps": 4,
+			"step_timeout": "30s",
+			"memory_limit_mb": 256,
+			"verify_mode": "off"
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"run", "--task", "inspect repository", "--config", configPath, "--json"}, &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stderr.String(), `unsupported provider type "plugin"`) {
+		t.Fatalf("stderr = %q, want deterministic plugin provider failure", stderr.String())
+	}
+}
+
+func TestPluginSelectionRejectsConflictingSources(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"plugin_provider": "acme/provider",
+		"providers": {
+			"openai": {
+				"type": "openai",
+				"model": "gpt-4.1-mini"
+			},
+			"acme/provider": {
+				"type": "plugin",
+				"model": "plugin-model"
+			}
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"run", "--task", "inspect repository", "--config", configPath, "--provider", config.ProviderOpenAI, "--json"}, &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "provider selection conflict") {
+		t.Fatalf("stderr = %q, want provider selection conflict", stderr.String())
+	}
+}
+
+func TestResumeFailsClosedWhenPersistedProviderContractVersionMismatches(t *testing.T) {
+	// 注意：该测试会覆盖全局 provider resolver，避免并行执行以防互相污染。
+
+	previous := llm.DefaultProviderResolver()
+	resolver := &providerResolverStub{provider: &providerPluginStub{id: "acme/provider", name: "Acme Provider", metadata: domain.PluginMetadata{
+		Family:                domain.PluginFamilyProvider,
+		LogicalID:             "acme/provider",
+		DisplayName:           "Acme Provider",
+		ContractVersion:       "2.0.0",
+		ImplementationVersion: "2.1.0",
+		ExecutionMode:         domain.PluginExecutionModeExternal,
+		SourcePath:            "plugins/provider-acme",
+	}}}
+	llm.SetDefaultProviderResolver(resolver)
+	defer llm.SetDefaultProviderResolver(previous)
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	configPath := filepath.Join(t.TempDir(), "zheng.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"default_provider": "acme/provider",
+		"plugin_provider": "acme/provider",
+		"providers": {
+			"acme/provider": {
+				"type": "plugin",
+				"model": "plugin-model",
+				"api_key": "secret"
+			}
+		},
+		"runtime": {
+			"max_steps": 4,
+			"step_timeout": "30s",
+			"memory_limit_mb": 256,
+			"verify_mode": "off"
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	sessionStore, err := store.NewSQLiteSessionStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteSessionStore() error = %v", err)
+	}
+	defer func() { _ = sessionStore.Close() }()
+
+	ctx := context.Background()
+	now := time.Date(2026, time.April, 30, 12, 10, 0, 0, time.UTC)
+	provenance := &domain.Provenance{Plugins: []domain.PluginMetadata{{
+		Family:                domain.PluginFamilyProvider,
+		LogicalID:             "acme/provider",
+		DisplayName:           "Acme Provider",
+		ContractVersion:       "1.0.0",
+		ImplementationVersion: "2.0.0",
+		ExecutionMode:         domain.PluginExecutionModeExternal,
+		SourcePath:            "plugins/provider-acme",
+	}}}
+	if err := sessionStore.SaveSession(ctx, domain.Session{ID: "session-resume-provider-contract", TaskID: "task-resume-provider-contract", Status: domain.SessionStatusRunning, Provenance: provenance, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	if err := sessionStore.SavePlan(ctx, domain.Plan{ID: "plan-resume-provider-contract", TaskID: "task-resume-provider-contract", Summary: "resume persisted provider plugin contract", CreatedAt: now}); err != nil {
+		t.Fatalf("SavePlan() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runCLI(context.Background(), []string{"resume", "--session", "session-resume-provider-contract", "--db", dbPath, "--config", configPath}, &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("resume exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "resume fail-closed") || !strings.Contains(stderr.String(), "1.0.0") || !strings.Contains(stderr.String(), "2.0.0") {
+		t.Fatalf("stderr = %q, want deterministic contract-version mismatch", stderr.String())
 	}
 }
 
@@ -588,6 +1022,49 @@ func TestRunInspectAndResumePreserveTaskMetadata(t *testing.T) {
 	}
 }
 
+type providerResolverStub struct {
+	provider llm.Provider
+	calls    int
+}
+
+func (s *providerResolverStub) Resolve(_ string, _ llm.ProviderConfig) (llm.Provider, error) {
+	s.calls++
+	if s.provider == nil {
+		return nil, fmt.Errorf("missing provider")
+	}
+	return s.provider, nil
+}
+
+type providerPluginStub struct {
+	id       string
+	name     string
+	metadata domain.PluginMetadata
+	call     int
+}
+
+func (p *providerPluginStub) Name() string  { return p.name }
+func (p *providerPluginStub) Model() string { return "plugin-model" }
+func (p *providerPluginStub) Generate(_ context.Context, _ llm.Request) (llm.Response, error) {
+	p.call++
+	var output string
+	switch p.call {
+	case 1:
+		output = `{"summary":"plugin plan"}`
+	case 2:
+		output = `{"type":"respond","summary":"respond via plugin","response":"plugin-backed completion"}`
+	default:
+		output = `{"summary":"observed provider plugin","final_response":"plugin-backed completion"}`
+	}
+	return llm.Response{Model: p.Model(), Output: output}, nil
+}
+func (p *providerPluginStub) Stream(_ context.Context, _ llm.Request, _ func(domain.StreamingEvent) error) error {
+	return nil
+}
+func (p *providerPluginStub) ProviderID() string { return p.id }
+func (p *providerPluginStub) Metadata() domain.PluginMetadata {
+	return p.metadata
+}
+
 func TestNewVerifierFromConfigRespectsVerifyMode(t *testing.T) {
 	t.Parallel()
 
@@ -698,13 +1175,13 @@ func TestPluginCLI(t *testing.T) {
 			for _, path := range resolvePluginTargets(normalizePluginCLIOptions(options)) {
 				loadedPaths = append(loadedPaths, path)
 			}
-			registry := cloneExecutorRegistry(base)
+			registry := runtimebuilder.CloneExecutorRegistry(base)
 			for _, name := range []string{"echo-plugin", "inspect.so"} {
-				if err := registry.Register(toToolDefinition(&stubCLIPluginTool{name: name})); err != nil {
+				if err := registry.Register(runtimebuilder.ToToolDefinition(&stubCLIPluginTool{name: name})); err != nil {
 					return nil, err
 				}
 			}
-			return &pluginExecutor{base: base, registry: registry}, nil
+			return pluginExecutorForTest{base: base, registry: registry}, nil
 		},
 		newModel: func() domain.Model { return &FakeModel{} },
 		newVerifier: func(domain.ToolExecutor) domain.Verifier { return FakeVerifier{} },
@@ -762,6 +1239,19 @@ func TestPluginCLI(t *testing.T) {
 	if containsString(observedTools, "") {
 		t.Fatalf("observed tools contains empty name: %v", observedTools)
 	}
+}
+
+type pluginExecutorForTest struct {
+	base     domain.ToolExecutor
+	registry *tools.Registry
+}
+
+func (e pluginExecutorForTest) Execute(ctx context.Context, call domain.ToolCall) (domain.ToolResult, error) {
+	return e.base.Execute(ctx, call)
+}
+
+func (e pluginExecutorForTest) Registry() *tools.Registry {
+	return e.registry
 }
 
 type stubCLIPluginTool struct {

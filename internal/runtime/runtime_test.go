@@ -122,7 +122,7 @@ func TestRuntimeCompletesSuccessfulSession(t *testing.T) {
 		Tools:          &fakeToolExecutor{},
 		Memory:         &fakeMemoryStore{},
 		Sessions:       &fakeSessionStore{},
-		Verifier:       &fakeVerifier{results: []domain.VerificationResult{{Passed: true, Reason: "ok"}}},
+		Verifier:       &pluginProvenanceFakeVerifier{fakeVerifier: fakeVerifier{results: []domain.VerificationResult{{Passed: true, Reason: "ok"}}}},
 		Clock:          fixedClock(fixedTime),
 		MaxSteps:       2,
 		MaxRetries:     1,
@@ -138,6 +138,15 @@ func TestRuntimeCompletesSuccessfulSession(t *testing.T) {
 	}
 	if len(steps) != 1 {
 		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+	if session.Provenance == nil || len(session.Provenance.Plugins) != 1 {
+		t.Fatalf("session provenance = %#v, want verifier plugin provenance", session.Provenance)
+	}
+	if steps[0].Provenance == nil || len(steps[0].Provenance.Plugins) != 1 {
+		t.Fatalf("step provenance = %#v, want verifier plugin provenance", steps[0].Provenance)
+	}
+	if got := steps[0].Provenance.Plugins[0].Family; got != domain.PluginFamilyVerifier {
+		t.Fatalf("step provenance family = %q, want %q", got, domain.PluginFamilyVerifier)
 	}
 }
 
@@ -786,5 +795,20 @@ func (f *fakeVerifier) Verify(_ context.Context, _ domain.Task, _ domain.Session
 func fixedClock(timestamp time.Time) func() time.Time {
 	return func() time.Time {
 		return timestamp
+	}
+}
+
+type pluginProvenanceFakeVerifier struct {
+	fakeVerifier
+}
+
+func (f *pluginProvenanceFakeVerifier) VerifierProvenance() *domain.PluginMetadata {
+	return &domain.PluginMetadata{
+		Family:          domain.PluginFamilyVerifier,
+		LogicalID:       "fake-verifier",
+		DisplayName:     "Fake Verifier",
+		ContractVersion: "1.0.0",
+		ExecutionMode:   domain.PluginExecutionModeExternal,
+		SourcePath:      "/plugins/fake-verifier",
 	}
 }
