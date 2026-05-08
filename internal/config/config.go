@@ -57,6 +57,14 @@ type ServerSettings struct {
 	ActiveSessionCap int           `json:"active_session_cap"`
 	ShutdownTimeout  time.Duration `json:"shutdown_timeout"`
 	EnableWAL        bool          `json:"enable_wal"`
+	WebUIEnabled     bool          `json:"web_ui_enabled"`
+	WebUI            WebUISettings `json:"web_ui"`
+}
+
+type WebUISettings struct {
+	Enabled   bool   `json:"enabled"`
+	StaticDir string `json:"static_dir"`
+	IndexPath string `json:"index_path"`
 }
 
 type fileConfig struct {
@@ -115,6 +123,13 @@ type serverFileConfig struct {
 	ActiveSessionCap *int    `json:"active_session_cap"`
 	ShutdownTimeout  *string `json:"shutdown_timeout"`
 	EnableWAL        *bool   `json:"enable_wal"`
+	WebUI            *webUIFileConfig `json:"web_ui"`
+}
+
+type webUIFileConfig struct {
+	Enabled   *bool   `json:"enabled"`
+	StaticDir *string `json:"static_dir"`
+	IndexPath *string `json:"index_path"`
 }
 
 // GetModel 通过 provider 边界契约暴露当前选定的模型。
@@ -165,6 +180,12 @@ func Default() Config {
 			ActiveSessionCap: 8,
 			ShutdownTimeout:  30 * time.Second,
 			EnableWAL:        true,
+			WebUIEnabled:     false,
+			WebUI: WebUISettings{
+				Enabled:   false,
+				StaticDir: "",
+				IndexPath: "web/index.html",
+			},
 		},
 	}
 }
@@ -211,6 +232,8 @@ func Load(args []string) (Config, error) {
 	activeSessionCap := cfg.Server.ActiveSessionCap
 	shutdownTimeout := cfg.Server.ShutdownTimeout
 	enableWAL := cfg.Server.EnableWAL
+	webUIEnabled := cfg.Server.WebUIEnabled || cfg.Server.WebUI.Enabled
+	webUIDir := cfg.Server.WebUI.StaticDir
 
 	fs.StringVar(&model, "model", model, "model identifier")
 	fs.StringVar(&provider, "provider", provider, "built-in provider identifier")
@@ -227,6 +250,8 @@ func Load(args []string) (Config, error) {
 	fs.IntVar(&activeSessionCap, "active-session-cap", activeSessionCap, "server active session cap")
 	fs.DurationVar(&shutdownTimeout, "shutdown-timeout", shutdownTimeout, "server shutdown timeout")
 	fs.BoolVar(&enableWAL, "server-enable-wal", enableWAL, "enable sqlite WAL mode for server")
+	fs.BoolVar(&webUIEnabled, "web-ui-enabled", webUIEnabled, "enable same-origin embedded web UI routes")
+	fs.StringVar(&webUIDir, "web-ui-dir", webUIDir, "serve web UI assets from directory instead of embedded files")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -305,6 +330,9 @@ func Load(args []string) (Config, error) {
 	cfg.Server.ActiveSessionCap = activeSessionCap
 	cfg.Server.ShutdownTimeout = shutdownTimeout
 	cfg.Server.EnableWAL = enableWAL
+	cfg.Server.WebUIEnabled = webUIEnabled
+	cfg.Server.WebUI.Enabled = webUIEnabled
+	cfg.Server.WebUI.StaticDir = strings.TrimSpace(webUIDir)
 	if strings.TrimSpace(cfg.DefaultProvider) == "" {
 		cfg.DefaultProvider = cfg.Provider
 	}
@@ -414,6 +442,17 @@ func applyEnv(cfg *Config, selection *providerSelectionSource) error {
 		}
 		cfg.Server.EnableWAL = parsed
 	}
+	if value := strings.TrimSpace(os.Getenv("ZHENG_SERVER_WEB_UI_ENABLED")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("parse ZHENG_SERVER_WEB_UI_ENABLED: %w", err)
+		}
+		cfg.Server.WebUIEnabled = parsed
+		cfg.Server.WebUI.Enabled = parsed
+	}
+	if value := strings.TrimSpace(os.Getenv("ZHENG_SERVER_WEB_UI_DIR")); value != "" {
+		cfg.Server.WebUI.StaticDir = value
+	}
 
 	return nil
 }
@@ -522,6 +561,18 @@ func loadFromFile(cfg *Config, path string, required bool, selection *providerSe
 		}
 		if parsed.Server.EnableWAL != nil {
 			cfg.Server.EnableWAL = *parsed.Server.EnableWAL
+		}
+		if parsed.Server.WebUI != nil {
+			if parsed.Server.WebUI.Enabled != nil {
+				cfg.Server.WebUIEnabled = *parsed.Server.WebUI.Enabled
+				cfg.Server.WebUI.Enabled = *parsed.Server.WebUI.Enabled
+			}
+			if parsed.Server.WebUI.StaticDir != nil {
+				cfg.Server.WebUI.StaticDir = strings.TrimSpace(*parsed.Server.WebUI.StaticDir)
+			}
+			if parsed.Server.WebUI.IndexPath != nil {
+				cfg.Server.WebUI.IndexPath = strings.TrimSpace(*parsed.Server.WebUI.IndexPath)
+			}
 		}
 	}
 
@@ -773,6 +824,9 @@ func (c Config) Validate() error {
 	}
 	if c.Server.ShutdownTimeout <= 0 {
 		return errors.New("server shutdown timeout must be greater than zero")
+	}
+	if strings.TrimSpace(c.Server.WebUI.IndexPath) == "" {
+		return errors.New("server web UI index path must not be empty")
 	}
 
 	switch c.Runtime.VerifyMode {

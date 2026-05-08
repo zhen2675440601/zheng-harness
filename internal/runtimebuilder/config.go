@@ -23,6 +23,8 @@ var configFlagNames = map[string]bool{
 	"active-session-cap": true,
 	"shutdown-timeout": true,
 	"server-enable-wal": true,
+	"web-ui-enabled": true,
+	"web-ui-dir": true,
 }
 
 func LoadCLIConfig(command string, args []string) (config.Config, error) {

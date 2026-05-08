@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zheng Harness - v5 Web UI</title>
+  <link rel="stylesheet" href="/web/css/app.css">
+</head>
+<body>
+  <!-- Auth Screen -->
+  <div id="auth-screen" data-test="auth-panel">
+    <div class="card">
+      <h2>Authentication</h2>
+      <input type="password" id="jwt-input" aria-label="JWT Token" placeholder="Paste your JWT token...">
+      <button id="connect-btn">Connect</button>
+      <div id="auth-status-connected" data-test="auth-status-connected" style="display:none">
+        <span class="status-dot green"></span> Connected
+      </div>
+      <div id="auth-error" data-test="auth-error" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div id="main-content" style="display:none">
+    <nav data-test="nav" class="nav-bar">
+      <div class="nav-brand">Zheng Harness</div>
+      <div class="nav-links">
+        <a href="#/" data-test="nav-dashboard">Dashboard</a>
+        <a href="#/task" data-test="nav-task">New Task</a>
+      </div>
+    </nav>
+
+    <!-- Dashboard -->
+    <div id="page-dashboard" data-test="page-dashboard" class="page">
+      <div class="card">
+        <h2>Dashboard</h2>
+        <div id="session-list" data-test="session-list"></div>
+      </div>
+    </div>
+
+    <!-- Task Form -->
+    <div id="page-task" data-test="page-task" class="page" style="display:none">
+      <div class="card">
+        <h2>New Task</h2>
+        <form id="task-form" data-test="task-form">
+          <div class="form-group">
+            <label for="task-input">Task Description</label>
+            <textarea id="task-input" aria-label="Task" rows="3"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="task-type">Task Type</label>
+            <select id="task-type" aria-label="Task Type">
+              <option value="coding">Coding</option>
+              <option value="research">Research</option>
+              <option value="file_workflow">File Workflow</option>
+              <option value="general">General</option>
+            </select>
+          </div>
+          <button type="submit" id="run-task-btn">Run Task</button>
+          <div id="task-validation-error" data-test="task-validation-error" style="display:none"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Stream -->
+    <div id="page-stream" data-test="page-stream" class="page" style="display:none">
+      <div class="card">
+        <h2>Session Stream</h2>
+        <div>Session ID: <code id="session-id" data-test="session-id"></code></div>
+        <div id="session-stream" data-test="session-stream"></div>
+        <div id="stream-disconnected" data-test="stream-disconnected" style="display:none"></div>
+        <a id="view-detail-link" data-test="view-detail-link" style="display:none">View Session Detail</a>
+      </div>
+    </div>
+
+    <!-- Detail -->
+    <div id="page-detail" data-test="page-detail" class="page" style="display:none">
+      <div class="card">
+        <h2>Session Detail</h2>
+        <div id="session-detail" data-test="session-detail"></div>
+        <button id="resume-btn" data-test="resume-btn" style="display:none">Resume</button>
+      </div>
+    </div>
+
+    <!-- Stream Events -->
+    <div id="stream-events" data-test="stream-events" class="stream-events"></div>
+  </div>
+
+  <div id="disconnect-btn-container" style="text-align:right;padding:8px;">
+    <button id="disconnect-btn" style="display:none;">Disconnect</button>
+  </div>
+
+  <script src="/web/js/auth.js"></script>
+  <script src="/web/js/api.js"></script>
+  <script src="/web/js/app.js"></script>
+</body>
+</html>

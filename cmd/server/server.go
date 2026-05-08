@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"io"
 	"net/http"
 	"os"
@@ -132,6 +133,8 @@ func (a serverApp) run(ctx context.Context, args []string) error {
 	activeSessionCap := fs.Int("active-session-cap", a.cfg.Server.ActiveSessionCap, "server active session cap")
 	shutdownTimeout := fs.Duration("shutdown-timeout", a.cfg.Server.ShutdownTimeout, "server shutdown timeout")
 	enableWAL := fs.Bool("server-enable-wal", a.cfg.Server.EnableWAL, "enable sqlite WAL mode for server")
+	webUIEnabled := fs.Bool("web-ui-enabled", a.cfg.Server.WebUIEnabled, "enable same-origin embedded web UI routes")
+	webUIDir := fs.String("web-ui-dir", a.cfg.Server.WebUI.StaticDir, "serve web UI assets from directory instead of embedded files")
 	dbPath := fs.String("db", defaultDBPath, "sqlite database path")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -154,6 +157,16 @@ func (a serverApp) run(ctx context.Context, args []string) error {
 	}
 	serverCfg.JWTSecret = resolvedSecret
 	serverCfg.JWTSecretFile = ""
+	apiConfig := a.cfg
+	apiConfig.Server.ListenAddress = serverCfg.ListenAddress
+	apiConfig.Server.JWTSecret = serverCfg.JWTSecret
+	apiConfig.Server.JWTSecretFile = serverCfg.JWTSecretFile
+	apiConfig.Server.ActiveSessionCap = serverCfg.ActiveSessionCap
+	apiConfig.Server.ShutdownTimeout = serverCfg.ShutdownTimeout
+	apiConfig.Server.EnableWAL = serverCfg.EnableWAL
+	apiConfig.Server.WebUIEnabled = *webUIEnabled
+	apiConfig.Server.WebUI.Enabled = *webUIEnabled
+	apiConfig.Server.WebUI.StaticDir = strings.TrimSpace(*webUIDir)
 
 	sessionStore, memoryStore, cleanup, err := a.openRuntimeDeps(*dbPath, runtimebuilder.StoreOptions{EnableWAL: serverCfg.EnableWAL})
 	if err != nil {
@@ -174,22 +187,11 @@ func (a serverApp) run(ctx context.Context, args []string) error {
 		MemoryStore:  memoryStore,
 		Manager:      manager,
 		Builder:      a.builder,
-		Config:       a.cfg,
+		Config:       apiConfig,
 		JWTSecret:    resolvedSecret,
 	}
 	router := a.newRouter()
-	router.Use(middleware.RequestID)
-	router.Use(api.Recoverer)
-	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		serverapi.WriteJSONForServer(w, http.StatusOK, map[string]any{"status": "ok"})
-	})
-	router.Route("/api/v1", func(r chi.Router) {
-		r.Use(api.AuthMiddleware)
-		r.Post("/run", api.JSON(api.HandleRun))
-		r.Post("/resume", api.JSON(api.HandleResume))
-		r.Get("/sessions/{id}/inspect", api.JSON(api.HandleInspect))
-		r.Get("/sessions/{id}/stream", api.JSON(api.HandleStream))
-	})
+	registerRoutes(router, api)
 
 	server := a.newHTTPServer(serverCfg.ListenAddress, router)
 	errCh := make(chan error, 1)
@@ -225,6 +227,31 @@ func (a serverApp) run(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+func registerRoutes(router chi.Router, api *serverapi.API) {
+	registerRoutesWithWebFS(router, api, nil)
+}
+
+func registerRoutesWithWebFS(router chi.Router, api *serverapi.API, webAssets fs.FS) {
+	router.Use(middleware.RequestID)
+	router.Use(api.Recoverer)
+	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		serverapi.WriteJSONForServer(w, http.StatusOK, map[string]any{"status": "ok"})
+	})
+	router.Route("/api/v1", func(r chi.Router) {
+		r.Use(api.AuthMiddleware)
+		r.Post("/run", api.JSON(api.HandleRun))
+		r.Post("/resume", api.JSON(api.HandleResume))
+		r.Get("/sessions", api.JSON(api.HandleListSessions))
+		r.Get("/sessions/{id}/inspect", api.JSON(api.HandleInspect))
+		r.Get("/sessions/{id}/stream", api.JSON(api.HandleStream))
+	})
+	if webAssets == nil {
+		serverapi.RegisterWebRoutes(router, api)
+		return
+	}
+	serverapi.RegisterWebRoutesWithFS(router, api, webAssets)
 }
 
 func (a serverApp) openRuntimeDeps(dbPath string, opts runtimebuilder.StoreOptions) (*store.SQLiteSessionStore, *store.SQLiteMemoryStore, func(), error) {

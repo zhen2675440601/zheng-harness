@@ -97,6 +97,27 @@ func joinPattern(prefix, pattern string) string {
 func matchPattern(pattern, path string) (map[string]string, bool) {
 	patternParts := splitPattern(pattern)
 	pathParts := splitPattern(path)
+
+	// Trailing * is a catch-all wildcard: matches one or more remaining segments.
+	if len(patternParts) > 0 && patternParts[len(patternParts)-1] == "*" {
+		prefixLen := len(patternParts) - 1
+		if len(pathParts) < prefixLen {
+			return nil, false
+		}
+		params := make(map[string]string)
+		for i := 0; i < prefixLen; i++ {
+			part := patternParts[i]
+			if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+				params[strings.TrimSuffix(strings.TrimPrefix(part, "{"), "}")] = pathParts[i]
+				continue
+			}
+			if part != pathParts[i] {
+				return nil, false
+			}
+		}
+		return params, true
+	}
+
 	if len(patternParts) != len(pathParts) {
 		return nil, false
 	}

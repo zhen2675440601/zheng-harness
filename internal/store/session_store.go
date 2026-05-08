@@ -24,6 +24,28 @@ type InspectState struct {
 	Lifecycle PersistedSessionLifecycle
 }
 
+type ListSessionsParams struct {
+	Page     int
+	PageSize int
+	Status   string
+}
+
+type ListSessionsResult struct {
+	Sessions []SessionSummary
+	Total    int
+	Page     int
+	PageSize int
+}
+
+type SessionSummary struct {
+	SessionID string
+	Status    string
+	Task      string
+	TaskType  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type SessionLifecyclePhase string
 
 const (
@@ -309,6 +331,100 @@ func (s *SQLiteSessionStore) InspectSession(ctx context.Context, sessionID strin
 		task.VerificationPolicy = metadataTask.VerificationPolicy
 	}
 	return InspectState{Session: session, Task: task.Normalize(), Plan: plan, Steps: steps, Lifecycle: lifecycle}, nil
+}
+
+func (s *SQLiteSessionStore) ListSessions(ctx context.Context, params ListSessionsParams) (*ListSessionsResult, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite session store is not initialized")
+	}
+	page := params.Page
+	if page < 1 {
+		page = 1
+	}
+	pageSize := params.PageSize
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	status := strings.TrimSpace(params.Status)
+
+	whereSQL := ""
+	args := make([]any, 0, 3)
+	if status != "" {
+		statuses, err := listSessionStatusesForFilter(status)
+		if err != nil {
+			return nil, err
+		}
+		placeholders := make([]string, 0, len(statuses))
+		for _, status := range statuses {
+			placeholders = append(placeholders, "?")
+			args = append(args, string(status))
+		}
+		whereSQL = " WHERE status IN (" + strings.Join(placeholders, ", ") + ")"
+	}
+
+	countQuery := `SELECT COUNT(*) FROM sessions` + whereSQL
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count sessions: %w", err)
+	}
+
+	offset := (page - 1) * pageSize
+	queryArgs := append(append([]any{}, args...), pageSize, offset)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, status, config_json, created_at, updated_at
+		FROM sessions`+whereSQL+`
+		ORDER BY created_at DESC
+		LIMIT ? OFFSET ?
+	`, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("query sessions: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]SessionSummary, 0)
+	for rows.Next() {
+		var (
+			summary    SessionSummary
+			configJSON sql.NullString
+		)
+		if err := rows.Scan(&summary.SessionID, &summary.Status, &configJSON, &summary.CreatedAt, &summary.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan session summary: %w", err)
+		}
+		metadata, err := parseStoredSessionMetadata(configJSON)
+		if err != nil {
+			return nil, fmt.Errorf("parse session %q metadata: %w", summary.SessionID, err)
+		}
+		if metadata.Task != nil {
+			summary.Task = strings.TrimSpace(metadata.Task.Description)
+			summary.TaskType = string(metadata.Task.Category.Normalize())
+		}
+		if summary.TaskType == "" {
+			summary.TaskType = string(domain.TaskCategoryGeneral)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session summaries: %w", err)
+	}
+
+	return &ListSessionsResult{Sessions: summaries, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+func listSessionStatusesForFilter(status string) ([]domain.SessionStatus, error) {
+	switch strings.TrimSpace(status) {
+	case "created":
+		return []domain.SessionStatus{domain.SessionStatusPending}, nil
+	case "running":
+		return []domain.SessionStatus{domain.SessionStatusRunning, domain.SessionStatusBlockedInput}, nil
+	case "completed":
+		return []domain.SessionStatus{domain.SessionStatusSuccess}, nil
+	case "cancelled":
+		return []domain.SessionStatus{domain.SessionStatusInterrupted}, nil
+	case "failed":
+		return []domain.SessionStatus{domain.SessionStatusVerificationFailed, domain.SessionStatusBudgetExceeded, domain.SessionStatusFatalError}, nil
+	default:
+		return nil, fmt.Errorf("unsupported session status filter %q", status)
+	}
 }
 
 func (s *SQLiteSessionStore) loadSession(ctx context.Context, sessionID string) (domain.Session, PersistedSessionLifecycle, error) {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"errors"
 	"io"
 	"net/http"
@@ -17,8 +18,12 @@ import (
 	pluginruntime "zheng-harness/internal/plugin"
 	"zheng-harness/internal/runtime"
 	"zheng-harness/internal/runtimebuilder"
+	serverapi "zheng-harness/internal/server"
 	"zheng-harness/internal/store"
 )
+
+//go:embed testdata/web/index.html
+var testWebUIFS embed.FS
 
 func TestServerStartupFailsWithoutJWTConfig(t *testing.T) {
 	t.Parallel()
@@ -121,6 +126,51 @@ func TestServerStartsAndExposesHealthEndpoint(t *testing.T) {
 	}
 	if !managerShutdownCalled {
 		t.Fatal("session manager shutdown was not called")
+	}
+}
+
+func TestWebUIRoutesMountedWithoutBreakingAPI(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.Server.WebUIEnabled = true
+	cfg.Server.WebUI.Enabled = true
+	cfg.Server.WebUI.IndexPath = "testdata/web/index.html"
+	api := &serverapi.API{Config: cfg}
+	router := chi.NewRouter()
+	registerRoutesWithWebFS(router, api, testWebUIFS)
+
+	rootRec := httptest.NewRecorder()
+	router.ServeHTTP(rootRec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rootRec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200, body=%s", rootRec.Code, rootRec.Body.String())
+	}
+	if got := rootRec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("GET / content-type = %q, want text/html; charset=utf-8", got)
+	}
+	if body := rootRec.Body.String(); body != "<!doctype html>\n<html><body>test web ui</body></html>\n" {
+		t.Fatalf("GET / body = %q", body)
+	}
+
+	apiRec := httptest.NewRecorder()
+	router.ServeHTTP(apiRec, httptest.NewRequest(http.MethodPost, "/api/v1/run", nil))
+	if apiRec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /api/v1/run status = %d, want 401", apiRec.Code)
+	}
+}
+
+func TestWebUIEnabledFalse(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	api := &serverapi.API{Config: cfg}
+	router := chi.NewRouter()
+	registerRoutesWithWebFS(router, api, testWebUIFS)
+
+	rootRec := httptest.NewRecorder()
+	router.ServeHTTP(rootRec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rootRec.Code != http.StatusNotFound {
+		t.Fatalf("GET / status = %d, want 404", rootRec.Code)
 	}
 }
 

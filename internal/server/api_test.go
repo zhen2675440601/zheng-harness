@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,10 +21,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"zheng-harness/internal/config"
 	"zheng-harness/internal/domain"
 	"zheng-harness/internal/runtime"
 	"zheng-harness/internal/store"
 )
+
+//go:embed testdata/web/index.html
+var testWebMountFS embed.FS
 
 func TestRunRequiresAuthentication(t *testing.T) {
 	t.Parallel()
@@ -33,6 +39,32 @@ func TestRunRequiresAuthentication(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("POST /api/v1/run status = %d, want 401", rec.Code)
 	}
+}
+
+func TestWebUIRoutesMountedWithoutBreakingAPI(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarnessWithOptions(t, testAPIHarnessOptions{webUIEnabled: true})
+	h.api.EngineFactory = func(_ *runtime.EventChannel, _ domain.Task, _ int, _ string) (runtime.SessionRunner, error) {
+		return fakeRunner{}, nil
+	}
+
+	rootRec := httptest.NewRecorder()
+	h.router.ServeHTTP(rootRec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rootRec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200, body=%s", rootRec.Code, rootRec.Body.String())
+	}
+	if got := rootRec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("GET / content-type = %q, want text/html; charset=utf-8", got)
+	}
+
+	apiRec := httptest.NewRecorder()
+	apiReq := httptest.NewRequest(http.MethodPost, "/api/v1/run", bytes.NewBufferString(`{"task":"demo"}`))
+	apiReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(apiRec, apiReq)
+	if apiRec.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/v1/run status = %d, want 202, body=%s", apiRec.Code, apiRec.Body.String())
+	}
+	_ = h.manager.Shutdown(context.Background())
 }
 
 func TestRunAcceptedWithAuthenticatedRequest(t *testing.T) {
@@ -88,6 +120,84 @@ func TestRunAcceptedWithAuthenticatedRequest(t *testing.T) {
 		t.Fatalf("active count = %d, want 1", h.manager.ActiveCount())
 	}
 	close(block)
+	_ = h.manager.Shutdown(context.Background())
+}
+
+func TestSessionIDContractUsesSessionIDFieldOnly(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+
+	// 1) run response contract
+	runRec := httptest.NewRecorder()
+	runReq := httptest.NewRequest(http.MethodPost, "/api/v1/run", bytes.NewBufferString(`{"task":"contract test","task_type":"general"}`))
+	runReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(runRec, runReq)
+	if runRec.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/v1/run status = %d, want 202", runRec.Code)
+	}
+	var runPayload map[string]any
+	if err := json.Unmarshal(runRec.Body.Bytes(), &runPayload); err != nil {
+		t.Fatalf("unmarshal run payload: %v", err)
+	}
+	if _, ok := runPayload["session_id"]; !ok {
+		t.Fatalf("run payload missing session_id: %#v", runPayload)
+	}
+	if _, hasLegacyID := runPayload["id"]; hasLegacyID {
+		t.Fatalf("run payload must not include legacy id field: %#v", runPayload)
+	}
+	sessionID, _ := runPayload["session_id"].(string)
+	if strings.TrimSpace(sessionID) == "" {
+		t.Fatalf("run payload session_id empty: %#v", runPayload)
+	}
+
+	// 2) inspect response contract
+	inspectRec := httptest.NewRecorder()
+	inspectReq := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+sessionID+"/inspect", nil)
+	inspectReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(inspectRec, inspectReq)
+	if inspectRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/sessions/{id}/inspect status = %d, want 200", inspectRec.Code)
+	}
+	var inspectPayload map[string]any
+	if err := json.Unmarshal(inspectRec.Body.Bytes(), &inspectPayload); err != nil {
+		t.Fatalf("unmarshal inspect payload: %v", err)
+	}
+	if _, ok := inspectPayload["session_id"]; !ok {
+		t.Fatalf("inspect payload missing session_id: %#v", inspectPayload)
+	}
+	if _, hasLegacyID := inspectPayload["id"]; hasLegacyID {
+		t.Fatalf("inspect payload must not include legacy id field: %#v", inspectPayload)
+	}
+
+	// 3) list response contract
+	listRec := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/sessions?page=1&page_size=20", nil)
+	listReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/sessions status = %d, want 200", listRec.Code)
+	}
+	var listPayload map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("unmarshal list payload: %v", err)
+	}
+	sessionsRaw, ok := listPayload["sessions"].([]any)
+	if !ok || len(sessionsRaw) == 0 {
+		t.Fatalf("list payload sessions missing/empty: %#v", listPayload)
+	}
+	for i, itemRaw := range sessionsRaw {
+		item, ok := itemRaw.(map[string]any)
+		if !ok {
+			t.Fatalf("session item[%d] invalid shape: %#v", i, itemRaw)
+		}
+		if _, ok := item["session_id"]; !ok {
+			t.Fatalf("session item[%d] missing session_id: %#v", i, item)
+		}
+		if _, hasLegacyID := item["id"]; hasLegacyID {
+			t.Fatalf("session item[%d] must not include legacy id field: %#v", i, item)
+		}
+	}
+
 	_ = h.manager.Shutdown(context.Background())
 }
 
@@ -320,6 +430,125 @@ func TestInspectReturnsPersistedState(t *testing.T) {
 	}
 	if payload.Steps[0].ToolInput["query"] != "main" {
 		t.Fatalf("tool input query = %#v, want main", payload.Steps[0].ToolInput["query"])
+	}
+}
+
+func TestListSessionsReturnsPaginatedSummaries(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	base := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	seedSessionForListTest(t, h, "session-created", domain.SessionStatusPending, "created task", domain.TaskCategoryCoding, base)
+	seedSessionForListTest(t, h, "session-running", domain.SessionStatusRunning, "running task", domain.TaskCategoryResearch, base.Add(time.Minute))
+	seedSessionForListTest(t, h, "session-blocked", domain.SessionStatusBlockedInput, "blocked task", domain.TaskCategoryGeneral, base.Add(2*time.Minute))
+	seedSessionForListTest(t, h, "session-completed", domain.SessionStatusSuccess, "completed task", domain.TaskCategoryFileWorkflow, base.Add(3*time.Minute))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions?page=1&page_size=2", nil)
+	req.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /sessions status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var payload listSessionsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal list response: %v", err)
+	}
+	if payload.Page != 1 || payload.PageSize != 2 || payload.Total != 4 {
+		t.Fatalf("pagination = %#v, want page=1 page_size=2 total=4", payload)
+	}
+	if len(payload.Sessions) != 2 {
+		t.Fatalf("len(sessions) = %d, want 2", len(payload.Sessions))
+	}
+	if payload.Sessions[0].SessionID != "session-completed" || payload.Sessions[1].SessionID != "session-blocked" {
+		t.Fatalf("sessions order = %#v, want completed then blocked", payload.Sessions)
+	}
+	if payload.Sessions[0].Status != "completed" || payload.Sessions[0].Task != "completed task" || payload.Sessions[0].TaskType != "file_workflow" {
+		t.Fatalf("first session = %#v, want completed summary", payload.Sessions[0])
+	}
+
+	filteredRec := httptest.NewRecorder()
+	filteredReq := httptest.NewRequest(http.MethodGet, "/api/v1/sessions?status=running&page=1&page_size=20", nil)
+	filteredReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(filteredRec, filteredReq)
+	if filteredRec.Code != http.StatusOK {
+		t.Fatalf("GET /sessions?status=running status = %d, want 200, body=%s", filteredRec.Code, filteredRec.Body.String())
+	}
+	var filtered listSessionsResponse
+	if err := json.Unmarshal(filteredRec.Body.Bytes(), &filtered); err != nil {
+		t.Fatalf("unmarshal filtered response: %v", err)
+	}
+	if filtered.Total != 2 || len(filtered.Sessions) != 2 {
+		t.Fatalf("filtered payload = %#v, want two running sessions", filtered)
+	}
+	if filtered.Sessions[0].SessionID != "session-blocked" || filtered.Sessions[1].SessionID != "session-running" {
+		t.Fatalf("filtered sessions = %#v, want blocked then running", filtered.Sessions)
+	}
+	for _, session := range filtered.Sessions {
+		if session.Status != "running" {
+			t.Fatalf("filtered status = %q, want running", session.Status)
+		}
+	}
+
+	maxRec := httptest.NewRecorder()
+	maxReq := httptest.NewRequest(http.MethodGet, "/api/v1/sessions?page_size=999", nil)
+	maxReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(maxRec, maxReq)
+	if maxRec.Code != http.StatusOK {
+		t.Fatalf("GET /sessions?page_size=999 status = %d, want 200", maxRec.Code)
+	}
+	var maxPayload listSessionsResponse
+	if err := json.Unmarshal(maxRec.Body.Bytes(), &maxPayload); err != nil {
+		t.Fatalf("unmarshal max response: %v", err)
+	}
+	if maxPayload.PageSize != 100 {
+		t.Fatalf("page_size = %d, want 100", maxPayload.PageSize)
+	}
+}
+
+func TestListSessionsReturnsEmptyResults(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /sessions status = %d, want 200", rec.Code)
+	}
+	var payload listSessionsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal empty response: %v", err)
+	}
+	if payload.Total != 0 || payload.Page != 1 || payload.PageSize != 20 {
+		t.Fatalf("empty payload = %#v, want defaults with zero total", payload)
+	}
+	if len(payload.Sessions) != 0 {
+		t.Fatalf("sessions = %#v, want empty", payload.Sessions)
+	}
+}
+
+func TestListSessionsRejectsInvalidQueryParams(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	for _, path := range []string{"/api/v1/sessions?page=0", "/api/v1/sessions?page_size=-1", "/api/v1/sessions?status=weird"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+h.jwt)
+		h.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s status = %d, want 400, body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestListSessionsRequiresAuthentication(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	h.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /sessions status = %d, want 401", rec.Code)
 	}
 }
 
@@ -671,15 +900,15 @@ func TestShutdownRejectsNewRequestsAndCancelsInflightSessions(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/run", bytes.NewBufferString(`{"task":"rejected during shutdown"}`))
 	req.Header.Set("Authorization", "Bearer "+h.jwt)
 	h.router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("POST /run during shutdown status = %d, want 500, body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST /run during shutdown status = %d, want 409, body=%s", rec.Code, rec.Body.String())
 	}
 	var payload errorEnvelope
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal shutdown rejection: %v", err)
 	}
-	if payload.Error.Code != "internal_error" || payload.Error.Message != "start session" {
-		t.Fatalf("shutdown rejection payload = %#v, want internal start session error", payload)
+	if payload.Error.Code != "conflict" || payload.Error.Message != "session manager is shutting down" {
+		t.Fatalf("shutdown rejection payload = %#v, want conflict session manager is shutting down", payload)
 	}
 
 	select {
@@ -700,6 +929,25 @@ func TestShutdownRejectsNewRequestsAndCancelsInflightSessions(t *testing.T) {
 	}
 	if h.manager.IsAccepting() {
 		t.Fatal("manager should reject new requests after shutdown")
+	}
+}
+
+func TestMapStartErrorSessionManagerClosedReturnsConflict(t *testing.T) {
+	t.Parallel()
+	a := &API{}
+	err := a.mapStartError(runtime.ErrSessionManagerClosed)
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("mapStartError error type = %T, want *apiError", err)
+	}
+	if apiErr.status != http.StatusConflict {
+		t.Fatalf("mapStartError status = %d, want 409", apiErr.status)
+	}
+	if apiErr.code != "conflict" {
+		t.Fatalf("mapStartError code = %q, want conflict", apiErr.code)
+	}
+	if apiErr.message != "session manager is shutting down" {
+		t.Fatalf("mapStartError message = %q, want session manager is shutting down", apiErr.message)
 	}
 }
 
@@ -744,6 +992,7 @@ func newTestAPIHarness(t *testing.T) testAPIHarness {
 
 type testAPIHarnessOptions struct {
 	managerOptions runtime.SessionManagerOptions
+	webUIEnabled   bool
 }
 
 func newTestAPIHarnessWithOptions(t *testing.T, opts testAPIHarnessOptions) testAPIHarness {
@@ -780,7 +1029,7 @@ func newTestAPIHarnessWithOptions(t *testing.T, opts testAPIHarnessOptions) test
 		current := clockBase.Add(time.Duration(clockTick) * time.Nanosecond)
 		clockTick++
 		return current
-	}}
+	}, Config: configForHarness(opts.webUIEnabled)}
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(api.Recoverer)
@@ -788,10 +1037,20 @@ func newTestAPIHarnessWithOptions(t *testing.T, opts testAPIHarnessOptions) test
 		r.Use(api.AuthMiddleware)
 		r.Post("/run", api.JSON(api.HandleRun))
 		r.Post("/resume", api.JSON(api.HandleResume))
+		r.Get("/sessions", api.JSON(api.HandleListSessions))
 		r.Get("/sessions/{id}/inspect", api.JSON(api.HandleInspect))
 		r.Get("/sessions/{id}/stream", api.JSON(api.HandleStream))
 	})
+	RegisterWebRoutesWithFS(r, api, testWebMountFS)
 	return testAPIHarness{router: r, api: api, sessionStore: sessionStore, memoryStore: memoryStore, manager: manager, jwt: makeJWT(t, "test-secret", time.Date(2026, 5, 6, 11, 0, 0, 0, time.UTC))}
+}
+
+func configForHarness(webUIEnabled bool) config.Config {
+	cfg := config.Default()
+	cfg.Server.WebUIEnabled = webUIEnabled
+	cfg.Server.WebUI.Enabled = webUIEnabled
+	cfg.Server.WebUI.IndexPath = "testdata/web/index.html"
+	return cfg
 }
 
 type fakeRunner struct{}
@@ -850,6 +1109,17 @@ func startSession(t *testing.T, h testAPIHarness, body string) sessionAcceptedRe
 		t.Fatalf("unmarshal accepted response: %v", err)
 	}
 	return accepted
+}
+
+func seedSessionForListTest(t *testing.T, h testAPIHarness, sessionID string, status domain.SessionStatus, task string, category domain.TaskCategory, createdAt time.Time) {
+	t.Helper()
+	updatedAt := createdAt.Add(30 * time.Second)
+	if err := h.sessionStore.SaveSession(context.Background(), domain.Session{ID: sessionID, TaskID: sessionID, Status: status, CreatedAt: createdAt, UpdatedAt: updatedAt}); err != nil {
+		t.Fatalf("SaveSession(%s) error = %v", sessionID, err)
+	}
+	if err := h.sessionStore.SaveTask(context.Background(), sessionID, domain.Task{ID: sessionID, Description: task, Goal: task, Category: category, CreatedAt: createdAt}); err != nil {
+		t.Fatalf("SaveTask(%s) error = %v", sessionID, err)
+	}
 }
 
 func mustEvent(t *testing.T, event *domain.StreamingEvent, err error) domain.StreamingEvent {

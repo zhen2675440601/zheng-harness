@@ -72,6 +72,22 @@ type inspectResponse struct {
 	Termination string        `json:"termination_reason,omitempty"`
 }
 
+type listSessionsResponse struct {
+	Sessions []listSessionItem `json:"sessions"`
+	Page     int               `json:"page"`
+	PageSize int               `json:"page_size"`
+	Total    int               `json:"total"`
+}
+
+type listSessionItem struct {
+	SessionID string    `json:"session_id"`
+	Status    string    `json:"status"`
+	Task      string    `json:"task"`
+	TaskType  string    `json:"task_type"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type inspectStep struct {
 	StepNumber  int            `json:"step_number"`
 	ToolName    string         `json:"tool_name,omitempty"`
@@ -303,6 +319,37 @@ func (a *API) HandleInspect(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+func (a *API) HandleListSessions(w http.ResponseWriter, r *http.Request) error {
+	page, err := parsePositiveIntQuery(r, "page", 1)
+	if err != nil {
+		return err
+	}
+	pageSize, err := parsePositiveIntQuery(r, "page_size", 20)
+	if err != nil {
+		return err
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	status, err := parseListStatusFilter(r.URL.Query().Get("status"))
+	if err != nil {
+		return err
+	}
+
+	result, err := a.SessionStore.ListSessions(r.Context(), store.ListSessionsParams{Page: page, PageSize: pageSize, Status: status})
+	if err != nil {
+		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: "list sessions", err: err}
+	}
+
+	writeJSON(w, http.StatusOK, listSessionsResponse{
+		Sessions: toListSessionItems(result.Sessions),
+		Page:     result.Page,
+		PageSize: result.PageSize,
+		Total:    result.Total,
+	})
+	return nil
+}
+
 func (a *API) HandleStream(w http.ResponseWriter, r *http.Request) error {
 	sessionID := strings.TrimSpace(chi.URLParam(r, "id"))
 	if sessionID == "" {
@@ -401,6 +448,8 @@ func (a *API) mapStartError(err error) error {
 		return &apiError{status: http.StatusConflict, code: "conflict", message: "session already running", err: err}
 	case errors.Is(err, runtime.ErrActiveSessionLimit):
 		return &apiError{status: http.StatusTooManyRequests, code: "too_many_requests", message: "active session cap exceeded", err: err}
+	case errors.Is(err, runtime.ErrSessionManagerClosed):
+		return &apiError{status: http.StatusConflict, code: "conflict", message: "session manager is shutting down", err: err}
 	default:
 		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: "start session", err: err}
 	}
@@ -608,6 +657,29 @@ func isSupportedVerifyMode(value string) bool {
 	}
 }
 
+func parsePositiveIntQuery(r *http.Request, key string, defaultValue int) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 {
+		return 0, &apiError{status: http.StatusBadRequest, code: "invalid_request", message: key + " must be a positive integer"}
+	}
+	return value, nil
+}
+
+func parseListStatusFilter(raw string) (string, error) {
+	status := strings.TrimSpace(raw)
+	if status == "" {
+		return "", nil
+	}
+	if _, ok := listStatusFilterMap()[status]; ok {
+		return status, nil
+	}
+	return status, &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "status must be one of created, running, completed, cancelled, failed"}
+}
+
 func isTerminalStatus(status domain.SessionStatus) bool {
 	switch status {
 	case domain.SessionStatusSuccess, domain.SessionStatusVerificationFailed, domain.SessionStatusBudgetExceeded, domain.SessionStatusFatalError:
@@ -629,6 +701,34 @@ func apiSessionStatus(status domain.SessionStatus) string {
 		return "cancelled"
 	default:
 		return "failed"
+	}
+}
+
+func toListSessionItems(summaries []store.SessionSummary) []listSessionItem {
+	if len(summaries) == 0 {
+		return []listSessionItem{}
+	}
+	items := make([]listSessionItem, 0, len(summaries))
+	for _, summary := range summaries {
+		items = append(items, listSessionItem{
+			SessionID: summary.SessionID,
+			Status:    apiSessionStatus(domain.SessionStatus(summary.Status)),
+			Task:      summary.Task,
+			TaskType:  summary.TaskType,
+			CreatedAt: summary.CreatedAt.UTC(),
+			UpdatedAt: summary.UpdatedAt.UTC(),
+		})
+	}
+	return items
+}
+
+func listStatusFilterMap() map[string][]string {
+	return map[string][]string{
+		"created":   {string(domain.SessionStatusPending)},
+		"running":   {string(domain.SessionStatusRunning), string(domain.SessionStatusBlockedInput)},
+		"completed": {string(domain.SessionStatusSuccess)},
+		"cancelled": {string(domain.SessionStatusInterrupted)},
+		"failed":    {string(domain.SessionStatusVerificationFailed), string(domain.SessionStatusBudgetExceeded), string(domain.SessionStatusFatalError)},
 	}
 }
 

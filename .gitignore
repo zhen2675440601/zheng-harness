@@ -20,13 +20,30 @@ Thumbs.db
 *.out
 coverage.txt
 
+# E2E test artifacts
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+.playwright-mcp/
+
+# Local scripts
+start_server.ps1
+
 # Temp files
 *.tmp
 *.log
+*.db-shm
+*.db-wal
+health.err
+healthcheck.*
+testdata/server-err.txt
+testdata/server-out.txt
+testdata/e2e-server.exe~
 
 # Sisyphus state (local only)
 .sisyphus/boulder.json
 .sisyphus/evidence/
+.sisyphus/run-continuation/
 ! .sisyphus/plans/
 ! .sisyphus/notepads/
 
