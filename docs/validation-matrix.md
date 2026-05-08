@@ -677,3 +677,89 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/run \
 curl -N http://127.0.0.1:8080/api/v1/sessions/test-session/stream \
   -H "Authorization: Bearer test-token"
 ```
+
+---
+
+## v5 Web UI Validation (Wave 5)
+
+### 23. Session List API
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **GET /api/v1/sessions returns paginated list** | `go test ./internal/server -run TestListSessionsReturnsPaginatedSummaries` | N/A | 200 OK, sessions array with pagination metadata | `internal/server/api_test.go` | ✅ PASS |
+| **Session list supports status filter** | `go test ./internal/server -run TestListSessionsReturnsEmptyResults` | N/A | Filtered by status, correct count returned | `internal/server/api_test.go` | ✅ PASS |
+| **Session list rejects invalid params** | `go test ./internal/server -run TestListSessionsRejectsInvalidQueryParams` | N/A | 400 Bad Request for invalid page/page_size/status | `internal/server/api_test.go` | ✅ PASS |
+| **Session list requires auth** | `go test ./internal/server -run TestListSessionsRequiresAuthentication` | N/A | 401 Unauthorized without JWT | `internal/server/api_test.go` | ✅ PASS |
+
+### 24. Embedded Web UI
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **Web UI routes mounted without breaking API** | `go test ./cmd/server -run TestWebUIRoutesMountedWithoutBreakingAPI` | N/A | `/` returns HTML, `/api/v1/*` routes remain registered | `cmd/server/server_test.go` | ✅ PASS |
+| **Web UI returns 404 when disabled** | `go test ./cmd/server -run TestWebUIEnabledFalse` | N/A | `/` returns 404 when --web-ui-enabled is not set | `cmd/server/server_test.go` | ✅ PASS |
+| **Web UI embedded via //go:embed** | `go build ./cmd/server` | N/A | Static assets served from compiled binary, zero external deps | `internal/server/web.go` | ✅ PASS |
+
+### 25. Browser Flow (E2E)
+
+All E2E tests are in a single serial suite: `e2e/tests/web-ui.spec.js`. Run with `npx playwright test --grep "WebUI"`.
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **Homepage loads with token input** | `npx playwright test --grep "WebUI: Loads root page"` | N/A | Page loads, JWT input field visible, Connect button present | `e2e/tests/web-ui.spec.js` | ✅ PASS |
+| **JWT connect flow verifies token** | `npx playwright test --grep "Connecting with valid JWT"` | N/A | Token paste → Connect click → `#main-content` visible → Dashboard shown | `e2e/tests/web-ui.spec.js` | ✅ PASS |
+| **Invalid token shows error** | `npx playwright test --grep "Invalid JWT"` | N/A | Bad token paste → Connect click → `#auth-error` visible | `e2e/tests/web-ui.spec.js` | ✅ PASS |
+| **Task form validates empty input** | `npx playwright test --grep "Task form validates"` | N/A | Empty field → submit → `#task-validation-error` visible | `e2e/tests/web-ui.spec.js` | ✅ PASS |
+| **Dashboard shows session list** | `npx playwright test --grep "Session list loads"` | N/A | Sessions loaded from API, "View details" links present | `e2e/tests/web-ui.spec.js` | ✅ PASS |
+| **Inspect view shows session detail** | `npx playwright test --grep "Session detail renders"` | N/A | Session detail page: task text, Session ID shown | `e2e/tests/web-ui.spec.js` | ✅ PASS |
+| **Live SSE stream view** | `npx playwright test --grep "Live session stream"` | N/A | SSE events rendered: token_delta, step_complete, session_complete | `e2e/tests/web-ui.spec.js` | ✅ PASS |
+
+### 26. JWT Token Bootstrap
+
+| Proof Surface | Command/Test | Fixture | Expected Outcome | Evidence Target | Status |
+|--------------|--------------|---------|------------------|-----------------|--------|
+| **Token validated via API call** | `npx playwright test --grep "Connecting with valid JWT"` | N/A | Token sent in Authorization header, `GET /api/v1/sessions` verifies validity | `e2e/tests/web-ui.spec.js` | ✅ PASS |
+| **Invalid token shows error** | `npx playwright test --grep "Invalid JWT"` | N/A | 401 response → `#auth-error` with "Invalid token" message | `e2e/tests/web-ui.spec.js` | ✅ PASS |
+| **Token persisted in localStorage** | verify `auth.js` `setToken()` + `getToken()` | N/A | `localStorage.setItem('zhengHarness.jwt', token)` on connect | `internal/server/web/js/auth.js:22-34` | ✅ PASS |
+
+### v5 Non-Goals (Verified Absent)
+
+| Proof Surface | Verification | Expected Outcome | Status |
+|--------------|-------------|------------------|--------|
+| **NO WebSocket transport** | Code review + test | All real-time communication uses SSE only | ✅ CONFIRMED |
+| **NO event replay** | SSE reconnect test | Reconnect only receives future events | ✅ CONFIRMED |
+| **NO separate SPA deployment** | Binary inspection | Web UI embedded via //go:embed, no standalone frontend | ✅ CONFIRMED |
+| **NO login/account system** | Code review | JWT auth via manual token paste, no user registration | ✅ CONFIRMED |
+
+---
+
+## v5 Evidence File Map
+
+Wave 5 (v5) evidence files:
+
+```
+.sisyphus/evidence/
+├── task-3-session-list.txt         # Session list API tests
+├── task-2-web-mount.txt            # Web UI mount tests
+├── task-5-auth-connected.txt       # E2E home page + JWT flow tests
+├── task-8-dashboard-detail.txt     # E2E dashboard tests
+├── task-6-run-flow.txt             # E2E task submission tests
+├── task-7-live-stream.txt          # E2E live SSE stream tests
+├── task-8-completed-detail.txt     # E2E inspect view tests
+├── task-9-playwright.txt           # E2E browser automation tests
+└── task-10-docs-sync.txt           # Documentation sync audit verification
+```
+
+---
+
+## v5 Final Acceptance Commands
+
+All of the following commands pass:
+
+```bash
+go build ./...                                    # Binary with embedded Web UI
+go test ./...                                     # Full test suite
+go test ./cmd/server/... -run TestWebUI           # Web UI handler tests
+go test ./internal/server/... -run TestListSessions # Session list API
+go test ./internal/server/... -run TestRun        # v4 API regression
+npx playwright test --grep "WebUI"                # E2E browser automation tests
+```

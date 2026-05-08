@@ -707,3 +707,144 @@ go run ./cmd/server --shutdown-timeout 60s
 - **NO WebSocket**: v4 仅支持 SSE 流式输出
 - **NO 事件回放**: SSE 重连仅接收未来事件
 - **NO GraphQL/JSON-RPC**: v4 仅使用 REST + SSE
+
+---
+
+## v5 Web UI (v5+)
+
+v5 新增同源内嵌 Web UI，通过 `--web-ui-enabled` 标志启动后，可在浏览器中直接管理会话。
+
+### 启动服务器
+
+```bash
+# 启动 API 服务器并启用 Web UI
+go run ./cmd/server --config ./zheng.json --addr :8080 --web-ui-enabled
+
+# 指定数据库文件
+go run ./cmd/server --config ./zheng.json --addr :8080 --web-ui-enabled --db ./agent.db
+
+# 指定 JWT 密钥（配置文件内设置）
+# zheng.json: {"jwt_secret": "your-secret-key", "jwt_expiry": "24h", ...}
+```
+
+**配置要求**:
+- 必须设置 `jwt_secret`（JWT 认证配置）
+- 浏览器访问 `http://127.0.0.1:8080`
+- Web UI 完全内嵌于 Go 二进制，无需单独部署或 CORS 配置
+
+### 浏览器使用流程
+
+#### 1. 连接服务器
+
+1. 浏览器打开 `http://127.0.0.1:8080`
+2. 将你的 JWT token 粘贴到页面右上角的 token 输入框
+3. 点击 **Connect** 按钮
+4. 系统通过 `GET /api/v1/sessions` API 调用验证 token 有效性
+5. token 自动保存到浏览器 localStorage，刷新页面无需重新输入
+6. Dashboard 首页加载最近会话列表
+
+#### 2. 提交新任务
+
+1. 在 Dashboard 或导航栏点击 **New Task**（新建任务）
+2. 填写任务信息:
+   - **Task**: 任务描述（必填）
+   - **Task Type**: `coding` / `research` / `file_workflow` / `general`
+   - **Provider**: 选择 LLM provider（如 `dashscope`、`openai`）
+   - **Model**: 模型名称
+   - **Max Steps**: 最大执行步数
+   - **Verify Mode**: `standard` / `strict` / `off`
+3. 点击 **Submit** 提交，页面自动跳转到 Live Stream 视图
+
+#### 3. 观看 Live SSE 流
+
+提交任务或从 Dashboard 打开运行中会话后，进入 Live Stream 视图：
+
+- 实时渲染 SSE 事件流:
+  - `token_delta`: 增量模型输出，逐字显示
+  - `tool_start` / `tool_end`: 工具调用开始/结束，显示工具名和输入输出
+  - `step_complete`: 步骤完成，显示步骤摘要
+  - `error`: 错误事件
+  - `session_complete`: 会话完成，显示最终状态
+- 流式内容自动滚动，步骤之间有明显分隔
+
+#### 4. 查看会话详情 (Inspect)
+
+1. 从 Dashboard 或 History 点击会话 ID
+2. Inspect 视图展示:
+   - 会话状态和基础信息（task、task_type、created_at）
+   - 计划摘要
+   - 步骤列表（每步的工具调用、输入输出、摘要）
+   - Provenance 信息（如使用过插件）
+
+#### 5. 浏览历史记录 (History)
+
+1. 在导航栏点击 **History**
+2. 分页加载所有历史会话
+3. 支持状态过滤: running / completed / failed / cancelled / resumable
+4. 点击会话行进入 Inspect 视图
+
+#### 6. 恢复会话 (Resume)
+
+- Dashboard 中 eligible 会话（状态非 running/completed）显示 **Resume** 按钮
+- 点击 Resume 后页面跳转到 Live Stream 视图，剩余步骤实时流式输出
+
+### Session 列表 API
+
+新增的 `GET /api/v1/sessions` 端点支持以下查询参数:
+
+```bash
+# 查询最近 20 个会话
+curl -sS -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/sessions"
+
+# 按状态过滤 + 分页
+curl -sS -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/sessions?status=running&limit=10&offset=0"
+
+# Dashboard 专用（最近创建）
+curl -sS -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/sessions?sort=created_at&order=desc&limit=12"
+```
+
+**响应格式**:
+```json
+{
+  "sessions": [
+    {
+      "session_id": "session-1710000000000000000",
+      "task": "inspect repository and propose next step",
+      "task_type": "coding",
+      "status": "completed",
+      "steps": 3,
+      "created_at": "2026-05-07T10:00:00Z",
+      "completed_at": "2026-05-07T10:05:00Z"
+    }
+  ],
+  "total_count": 42aves
+}
+```
+
+### E2E 测试
+
+```bash
+# 运行 E2E 浏览器自动化测试（需要安装 Playwright）
+npx playwright test
+
+# 仅运行 UI 相关测试
+npx playwright test --grep "home|dashboard|submit|inspect|history"
+```
+
+E2E 测试覆盖以下流程:
+- 首页加载与 JWT token 连接验证
+- 任务提交表单一流程
+- Dashboard 会话列表和状态过滤
+- Inspect 会话详情视图
+- History 历史浏览及分页
+
+### v5 不包含
+
+v5 **明确不包含**以下功能:
+- **NO 独立 SPA 部署**: Web UI 仅作为 Go 二进制内嵌资源，不单独部署
+- **NO WebSocket**: 实时流仅使用 SSE（Server-Sent Events）
+- **NO 事件回放**: SSE 重连仅接收未来事件
+- **NO 登录/账户系统**: JWT 认证采用手动 token 粘贴方式，无用户注册/登录功能

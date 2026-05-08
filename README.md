@@ -6,14 +6,15 @@
 **v2** 新增 **streaming 实时输出、3 个新工具、双模式插件系统、多 Agent 编排**。  
 **v3** 新增 **三家族插件系统 (provider/verifier/agent-strategy)、fail-closed 运行时、来源可追溯**。
 **v4** 新增 **HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider**。
+**v5** 新增 **同源内嵌 Web UI、Session 列表 API、浏览器 JWT Bootstrap、Dashboard 与 Live SSE 观看**。
 
 **定位**: 通用任务执行引擎，支持 coding、research、file workflow 等多种任务类型。
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成**
 
-核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证；**v3 三家族插件系统、fail-closed 语义、fail-closed 运行时已验证**；**v4 HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider 已验证**。详细进度请见 [PROGRESS.md](PROGRESS.md)。
+核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证；**v3 三家族插件系统、fail-closed 语义、fail-closed 运行时已验证**；**v4 HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider 已验证**；**v5 Web UI 同源内嵌、Session 列表 API、浏览器 JWT Bootstrap、Dashboard/Live SSE/Inspect 视图、E2E 浏览器自动化测试已验证**。详细进度请见 [PROGRESS.md](PROGRESS.md)。
 
 验证状态见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
@@ -141,6 +142,51 @@ v4 完成了真实的 HTTP-backed provider 实现：
 - **Fail-Closed**: 插件缺失/超时/崩溃时返回确定性错误，不静默 fallback
 - **会话隔离**: 多会话并发执行时不共享可变状态
 
+## v5 新增特性 (Web UI)
+
+### 1. 同源内嵌 Web UI.header
+v5 在 Go 二进制中内嵌了完整的 Web UI，通过 `//go:embed` 编译期嵌入，零外部依赖：
+
+- **同源部署**: Web UI 与服务端同一端口，无需独立前端部署或 CORS 配置
+- **浏览器 JWT Bootstrap**: 用户粘贴 JWT token，Connect 按钮通过 API 调试验证 token 有效性
+- **Token 持久化**: token 存储于浏览器 localStorage，刷新页面后无需重新输入
+
+### 2. Session 列表 API
+
+- **`GET /api/v1/sessions`**: 分页查询所有会话，支持 status 过滤和多种排序模式
+- 用于 Dashboard 概览和 History 视图分页加载
+
+### 3. Dashboard 仪表板
+
+- **状态过滤器**: 按 running/ completed/ failed/ cancelled/ resumable 筛选
+- **分页浏览**: 按页加载会话列表
+- **实时统计**: 展示各状态会话数量
+
+### 4. 任务提交与 Live SSE 流
+
+- **任务提交表单**: 浏览器内创建新会话，支持 task_type/ provider/ model/ max_steps/ verify_mode 高级选项
+- **Live SSE 视图**: 打开会话后实时流式显示 token_delta/ tool_start/ tool_end/ step_complete/ error/ session_complete 事件
+- **会话恢复**: 对 eligible 会话支持 resume 工作流
+
+### 5. 检查与历史视图
+
+- **Inspect 视图**: 展示会话详情，包含步骤列表、计划摘要、provenance 信息
+- **History 视图**: 分页浏览历史所有会话，支持 loading/ empty/ error 状态
+
+### 6. E2E 浏览器自动化测试
+
+- **Playwright 测试套件**: `e2e/` 目录中覆盖完整 UI 流程
+- **CI 集成**: GitHub Actions CI job 自动运行 E2E 测试
+- 测试覆盖: 首页加载、JWT 连接、任务提交表单、Dashboard/Inspect/History 视图
+
+### v5 非目标
+
+以下功能 **不在** v5 范围内：
+- **NO 独立 SPA 部署**: Web UI 仅作为 Go 二进制内嵌资源，不单独部署
+- **NO WebSocket**: 实时流仅使用 SSE（Server-Sent Events）
+- **NO 事件回放**: SSE 重连仅接收未来事件
+- **NO 登录/账户系统**: JWT 认证采用手动 token 粘贴方式，无用户注册/登录
+
 ## 快速开始
 
 ### 1. 克隆并进入仓库
@@ -207,6 +253,20 @@ curl -sS -H "Authorization: Bearer YOUR_TOKEN" \
 ```
 
 API 服务器需要 JWT 认证配置。详见 [`docs/USAGE.md`](docs/USAGE.md) API 服务器章节。
+
+### 4c. 启动 Web UI (v5+)
+
+```bash
+# 启动 API 服务器并启用 Web UI
+go run ./cmd/server --config ./zheng.json --addr :8080 --web-ui-enabled
+
+# 浏览器访问
+open http://127.0.0.1:8080
+
+# 粘贴 JWT token 到页面右上角输入框，点击 Connect 连接即可使用
+```
+
+Web UI 在浏览器中提供 Dashboard、Live SSE 流、任务提交、会话检查和历史浏览功能。详细使用说明见 [`docs/USAGE.md`](docs/USAGE.md) v5 Web UI 章节。
 
 ### 5. 查看详细使用说明
 
@@ -409,11 +469,10 @@ zheng-harness/
 
 ## 当前仍不包含
 
-- Web UI (v5 规划中)
 - Slack / Telegram / Discord 等网关
 - 向量数据库、embedding 检索、知识图谱
 - 插件市场 / 发现服务
-- WebSocket 传输 (v4 仅支持 SSE)
+- WebSocket 传输 (v5 仅支持 SSE)
 - 递归 Agent（深度=1 为上限）
 
 **v2 已实现**: 多代理编排 (orchestrator-worker)、插件系统 (双模式：外部进程 + 原生 Go 插件)、streaming 输出、新工具 (web_fetch, ask_user, code_search)。
@@ -421,6 +480,10 @@ zheng-harness/
 **v3 已实现**: 三家族插件系统 (provider/verifier/agent-strategy)、fail-closed 运行时、来源可追溯性、内置优先原则。
 
 **v4 已实现**: HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider、SQLite WAL 模式、JWT 认证。
+
+**vNominator 已实现**: 同源内嵌 Web UI、Session 列表 API、浏览器 JWT Bootstrap、Dashboard/Live SSE/Inspect/History 视图、E2E 浏览器自动化测试。
+
+**vNominate 已实现**: Same-origin embedded Web UI, session list API (GET /api/v1/sessions), browser JWT bootstrap UX, task submission/resume from browser, live SSE stream view, dashboard/inspect history views, Playwright browser automation tests.
 
 ## ADR 索引
 
@@ -432,6 +495,8 @@ zheng-harness/
 - [ADR-006: Streaming Runtime Architecture](docs/ADR-006-streaming-architecture.md)
 - [ADR-007: Plugin System Architecture](docs/ADR-007-plugin-system.md)
 - [ADR-008: v3 Extensibility Boundaries and Plugin Family Contracts](docs/ADR-008-v3-extensibility.md)
+- [ADR-009: v4 API Server Productization](docs/ADR-009-v4-api-server-productization.md)
+- [ADR-010: v5 Same-Origin Embedded Web UI](docs/ADR-010-v5-web-ui.md)
 
 ## 许可证
 

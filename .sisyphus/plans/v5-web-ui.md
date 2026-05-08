@@ -126,7 +126,7 @@ Wave 4: docs/progress/validation truth sync
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] T1. Freeze v5 Web UI ADR and browser contract
+- [x] T1. Freeze v5 Web UI ADR and browser contract
 
   **What to do**:
   1. Create a v5 ADR that fixes the Web UI scope, same-origin deployment model, JWT bootstrap UX, SSE/non-replay behavior, and the rule that completed sessions render from inspect data.
@@ -170,7 +170,7 @@ Wave 4: docs/progress/validation truth sync
 
   **Commit**: YES | Message: `docs(adr): freeze v5 web ui contract` | Files: `docs/ADR-*.md`
 
-- [ ] T2. Add same-origin web mount and server/config foundation
+- [x] T2. Add same-origin web mount and server/config foundation
 
   **What to do**:
   1. Extend server configuration with Web UI settings needed for enable/disable and web route behavior while keeping same-origin hosting as default.
@@ -215,7 +215,7 @@ Wave 4: docs/progress/validation truth sync
 
   **Commit**: YES | Message: `feat(server): mount same-origin web ui foundation` | Files: `cmd/server/**, internal/config/**, internal/server/**`
 
-- [ ] T3. Add session list API for dashboard and history views
+- [x] T3. Add session list API for dashboard and history views
 
   **What to do**:
   1. Add `GET /api/v1/sessions` with JWT auth, stable JSON shape, and pagination/filter parameters sufficient for dashboard/history rendering.
@@ -259,7 +259,7 @@ Wave 4: docs/progress/validation truth sync
 
   **Commit**: YES | Message: `feat(server): add session list api for web ui` | Files: `internal/server/**, internal/store/**`
 
-- [ ] T4. Build embedded Web UI shell and browser routes
+- [x] T4. Build embedded Web UI shell and browser routes
 
   **What to do**:
   1. Add embedded static assets and/or server-rendered HTML shell served by the Go binary using Go-native embedding.
@@ -303,7 +303,7 @@ Wave 4: docs/progress/validation truth sync
 
   **Commit**: YES | Message: `feat(web): serve embedded web ui shell` | Files: `cmd/server/**, internal/server/**`
 
-- [ ] T5. Add browser JWT bootstrap and persistence UX
+- [x] T5. Add browser JWT bootstrap and persistence UX
 
   **What to do**:
   1. Add a browser-side token entry flow that lets the user paste a JWT and persist it for later API calls.
@@ -347,7 +347,7 @@ Wave 4: docs/progress/validation truth sync
 
   **Commit**: YES | Message: `feat(web): add jwt bootstrap and persistence ux` | Files: `cmd/server/**, internal/server/**`
 
-- [ ] T6. Implement browser task submission and resume workflows
+- [x] T6. Implement browser task submission and resume workflows
 
   **What to do**:
   1. Add task form UX for `task`, `task_type`, optional provider/model/max_steps/verify_mode fields that map to the v4 API contract.
@@ -391,7 +391,7 @@ Wave 4: docs/progress/validation truth sync
 
   **Commit**: YES | Message: `feat(web): add browser run and resume workflows` | Files: `cmd/server/**, internal/server/**`
 
-- [ ] T7. Implement live SSE stream view and degraded-state handling
+- [x] T7. Implement live SSE stream view and degraded-state handling
 
   **What to do**:
   1. Build the browser stream panel that consumes the existing SSE endpoint and renders `token_delta`, `tool_start`, `tool_end`, `step_complete`, `error`, and `session_complete` events.
@@ -435,7 +435,7 @@ Wave 4: docs/progress/validation truth sync
 
   **Commit**: YES | Message: `feat(web): add live sse session stream view` | Files: `cmd/server/**, internal/server/**`
 
-- [ ] T8. Implement dashboard history and inspect/detail browser views
+- [x] T8. Implement dashboard history and inspect/detail browser views
 
   **What to do**:
   1. Build a session list/dashboard view backed by `GET /api/v1/sessions` with status filters and pagination controls.
@@ -479,7 +479,7 @@ Wave 4: docs/progress/validation truth sync
 
   **Commit**: YES | Message: `feat(web): add dashboard and inspect detail views` | Files: `cmd/server/**, internal/server/**`
 
-- [ ] T9. Add browser automation infrastructure and CI coverage for v5
+- [x] T9. Add browser automation infrastructure and CI coverage for v5
 
   **What to do**:
   1. Add Playwright-based end-to-end/browser verification for the Web UI.

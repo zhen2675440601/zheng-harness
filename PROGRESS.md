@@ -6,9 +6,9 @@
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成**
 
-**已完成**: T1-T11 (11/11 核心任务) + Phase 3 T1-T12 + Phase 4 闭环验证 + v1/v2/v3/v4 发布准备
+**已完成**: T1-T11 (11/11 核心任务) + Phase 3 T1-T12 + Phase 4 闭环验证 + v1/v2/v3/v4/v5 发布准备
 
 验证状态权威来源：[`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
@@ -201,7 +201,10 @@ go run ./cmd/agent run --task "hello" --provider deepseek
 
 ## 下一步执行入口
 
-**Phase 状态**: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ | v1 ✅ | v2 ✅ | v3 ✅ | v4 ✅
+**Phase 状态**: Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v1 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成
+
+**最后更新**: 2026-05-07
+**Go 版本**: 1.26.0
 
 ### 跨机器 handoff (Git-Based Continuation)
 
@@ -524,4 +527,87 @@ curl -N http://127.0.0.1:8080/api/v1/sessions/test-session/stream \
 **文档更新**: README/USAGE/PROGRESS/validation-matrix 已同步
 
 v4 发布准备已完成，所有功能实现、测试验证、文档更新已完成。
+
+---
+
+## v5 发布完成 ✅
+
+**v5 发布日期**: 2026-05-07  
+**发布版本**: v5.0.0  
+**状态**: READY
+
+### v5 新增功能总结
+
+#### 1. 同源内嵌 Web UI surely
+- **`//go:embed` 编译期嵌入**: Web UI 静态资源编译入 Go 二进制，零外部依赖
+- **同源部署**: 浏览器访问 `http://127.0.0.1:8080` 即可使用，无需独立前端或 CORS 配置
+- **浏览器 JWT Bootstrap**: 用户粘贴 JWT token，Connect 按钮通过 API 调用验证 token 有效性
+- **Token 持久化**: token 存储于 localStorage，刷新页面无需重新输入 ain
+
+#### 2. Session 列表 APIesome
+
+- **`GET /api/v1/sessions`**: 分页查询所有会话，支持 status 过滤和多种排序模式
+- Dashboard 和 History 视图依赖此 API 加载数据
+
+#### 3. 浏览器端功能
+
+- **Dashboard 仪表板**: 状态过滤器（running/completed/failed/cancelled/resumable）+ 分页浏览
+- **任务提交表单**: 支持 task、task_type、provider、model、max_steps、verify_mode 高级选项
+- **Live SSE 视图**: 实时流式渲染 token_delta、tool_start、tool_end、step_complete、error、session_complete 事件
+- **Inspect 视图**: 展示会话详情（步骤列表、计划摘要、provenance 信息）
+- **History 视图**: 分页浏览历史会话，覆盖 loading/empty/error 状态
+- **Resume 工作流**: 对 eligible 会话支持从浏览器恢复执行
+
+#### 4. E2E 浏览器自动化测试
+
+- **Playwright 测试套件**: `e2e/` 目录覆盖完整 UI 流程
+- **CI 集成**: GitHub Actions CI job `.github/workflows/ci.yml` 自动运行 E2E 测试
+- 测试覆盖: 首页加载、JWT 连接流程、任务提交表单、Dashboard/Inspect/History 视图
+
+### v5 已完成任务
+
+| 任务 | 描述 | 状态 |
+|------|------|------|
+| T1 | Session 列表 API (`GET /api/v1/sessions`) | ✅ 完成 |
+| T2 | 内嵌 Web UI 资源（`//go:embed` 编译期嵌入） | ✅ 完成 |
+| T3 | Web UI 首页 + JWT token 输入与验证 | ✅ 完成 |
+| T4 | Web UI Dashboard 会话列表与状态过滤 | ✅ 完成 |
+| T5 | Web UI 任务提交表单 | ✅ 完成 |
+| T6 | Web UI Live SSE 流式视图 | ✅ 完成 |
+| T7 | Web UI Inspect 会话检查视图 | ✅ 完成 |
+| T8 | Web UI History 历史浏览 | ✅ 完成 |
+| T9 | Web UI Resume 恢复工作流 | ✅ 完成 |
+| T10 | E2E 浏览器自动化测试（Playwright + CI） | ✅ 完成 |
+
+### v5 非目标
+
+v5 **明确不包含**以下功能：
+- **NO 独立 SPA 部署**: Web UI 仅作为 Go 二进制内嵌资源
+- **NO WebSocket**: 实时流仅使用 SSE
+- **NO 事件回放**: SSE 重连仅接收未来事件
+- **NO 登录/账户系统**: JWT 认证采用手动 token 粘贴，无用户注册/登录
+
+### v5 验收命令
+
+```bash
+go build ./...                              # Web UI 资源编译验证
+go test ./...                               # 全量单元测试
+go test ./e2e/...                           # E2E 浏览器自动化测试
+go run ./cmd/server --web-ui-enabled \      # 手动验证 Web UI
+  --config ./zheng.json --addr :8080
+# 浏览器打开 http://127.0.0.1:8080，粘贴 JWT token 验证
+```
+
+### v5 发布说明
+
+**状态**: READY  
+**Release Blockers**: 0  
+**验收测试**: 全部通过  
+**文档更新**: README/PROGRESS/USAGE/validation-matrix 已同步
+
+v5 发布准备已完成，所有功能实现、测试验证、文档更新已完成。
+
+---
+
+## 下一步执行入口
 
