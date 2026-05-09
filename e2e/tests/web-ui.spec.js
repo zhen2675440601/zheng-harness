@@ -55,7 +55,7 @@ test.describe('WebUI', () => {
       expect(response).not.toBeNull();
       expect(response.ok()).toBeTruthy();
       await expect(page.locator('#auth-screen')).toBeVisible();
-      await expect(page.getByText('Authentication')).toBeVisible();
+      await expect(page.getByText(/Authentication|连接 Harness 智能体/)).toBeVisible();
     });
 
     test('WebUI: Connecting with valid JWT shows connected state', async ({ page }) => {
@@ -66,8 +66,8 @@ test.describe('WebUI', () => {
 
     test('WebUI: Invalid JWT shows auth error', async ({ page }) => {
       await page.goto('/');
-      await page.getByLabel('JWT Token').fill('bad.token.value');
-      await page.getByRole('button', { name: 'Connect' }).click();
+      await page.getByLabel(/JWT Token|JWT 令牌/).fill('bad.token.value');
+      await page.getByRole('button', { name: /Connect|连接/ }).click();
       await expect(page.locator('#auth-error')).toBeVisible();
       await expect(page.locator('#auth-error')).toContainText('Invalid token');
     });
@@ -76,10 +76,10 @@ test.describe('WebUI', () => {
   test.describe('task form', () => {
     test('WebUI: Task form validates empty input', async ({ page }) => {
       await connect(page);
-      await page.getByRole('link', { name: 'New Task' }).click();
-      await page.getByRole('button', { name: 'Run Task' }).click();
+      await page.getByRole('link', { name: /New Task|新建任务/ }).click();
+      await page.getByRole('button', { name: /Run Task|开始执行/ }).click();
       await expect(page.locator('#task-validation-error')).toBeVisible();
-      await expect(page.locator('#task-validation-error')).toContainText('Task description is required.');
+      await expect(page.locator('#task-validation-error')).toContainText(/Task description is required\.|任务描述不能为空。/);
     });
   });
 
@@ -88,8 +88,8 @@ test.describe('WebUI', () => {
       await createSessionViaAPI(request, 'dashboard test session');
       await connect(page);
       // Verify the dashboard loaded with at least one session and navigation elements
-      await expect(page.locator('#session-list')).toContainText('View details');
-      await expect(page.locator('#session-list')).toContainText('Page');
+      await expect(page.locator('#session-list')).toContainText(/View details|查看详情/);
+      await expect(page.locator('#session-list')).toContainText(/Page|第/);
     });
 
     test('WebUI: Session detail renders inspect data', async ({ page, request }) => {
@@ -97,21 +97,21 @@ test.describe('WebUI', () => {
       await connect(page);
       await page.goto(`/#/detail/${created.session_id}`);
       await expect(page.locator('#page-detail')).toBeVisible();
-      await expect(page.locator('#session-detail')).toContainText('Session ID');
-      await expect(page.locator('#session-detail')).toContainText('Status');
+      await expect(page.locator('#session-detail')).toContainText(/Session ID|会话 ID/);
+      await expect(page.locator('#session-detail')).toContainText(/Status|状态/);
     });
   });
 
   test.describe('stream', () => {
     test('WebUI: Live session stream renders events', async ({ page }) => {
       await connect(page);
-      await page.getByRole('link', { name: 'New Task' }).click();
-      await page.getByRole('textbox', { name: 'Task' }).fill('stream session from browser');
-      await page.getByRole('button', { name: 'Run Task' }).click();
+      await page.getByRole('link', { name: /New Task|新建任务/ }).click();
+      await page.getByRole('textbox', { name: /Task|任务描述/ }).fill('stream session from browser');
+      await page.getByRole('button', { name: /Run Task|开始执行/ }).click();
 
       await expect(page.locator('#page-stream')).toBeVisible();
       await expect(page.locator('#session-id')).not.toHaveText('');
-      await expect(page.locator('#session-stream')).toContainText(/Connecting to session stream|Streaming live session output|Session complete:/);
+      await expect(page.locator('#session-stream')).toContainText(/Connecting to session stream|Streaming live session output|Session complete:|正在连接会话流|正在实时推送会话输出|会话已完成：/);
       await expect(page.locator('#stream-events')).toContainText(/SESSION COMPLETE|STEP COMPLETE|ERROR|TOKEN STREAM/);
     });
 
@@ -144,7 +144,7 @@ test.describe('WebUI', () => {
       await connect(page);
       await page.goto('/#/stream/session-malformed');
       await expect(page.locator('#page-stream')).toBeVisible();
-      await expect(page.locator('#session-stream')).toContainText('Session complete:', { timeout: 15000 });
+      await expect(page.locator('#session-stream')).toContainText(/Session complete:|会话已完成：/, { timeout: 15000 });
       await expect(page.locator('#view-detail-link')).toBeVisible();
     });
   });

@@ -1,20 +1,25 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zheng Harness - v5 Web UI</title>
+  <title>Zheng Harness 智能体控制台</title>
   <link rel="stylesheet" href="/web/css/app.css">
 </head>
 <body>
   <!-- Auth Screen -->
   <div id="auth-screen" data-test="auth-panel">
     <div class="card">
-      <h2>Authentication</h2>
-      <input type="password" id="jwt-input" aria-label="JWT Token" placeholder="Paste your JWT token...">
-      <button id="connect-btn">Connect</button>
+      <h2>连接 Harness 智能体</h2>
+      <div id="auth-auto-connecting" style="display:none">
+        <p>正在自动连接...</p>
+      </div>
+      <div id="auth-manual" style="display:block">
+        <input type="password" id="jwt-input" aria-label="JWT 令牌" placeholder="请输入或粘贴 JWT 令牌">
+        <button id="connect-btn">连接</button>
+      </div>
       <div id="auth-status-connected" data-test="auth-status-connected" style="display:none">
-        <span class="status-dot green"></span> Connected
+        <span class="status-dot green"></span> 已连接
       </div>
       <div id="auth-error" data-test="auth-error" style="display:none"></div>
     </div>
@@ -23,17 +28,33 @@
   <!-- Main Content -->
   <div id="main-content" style="display:none">
     <nav data-test="nav" class="nav-bar">
-      <div class="nav-brand">Zheng Harness</div>
+      <div class="nav-brand">
+        <strong>Zheng Harness</strong>
+        <span>通用智能体控制台</span>
+      </div>
       <div class="nav-links">
-        <a href="#/" data-test="nav-dashboard">Dashboard</a>
-        <a href="#/task" data-test="nav-task">New Task</a>
+        <a href="#/" data-test="nav-dashboard">工作台</a>
+        <a href="#/task" data-test="nav-task">新建任务</a>
       </div>
     </nav>
+
+    <section class="hero card">
+      <div>
+        <h1>统一管理你的智能体执行流</h1>
+        <p>从任务创建、执行追踪到结果复盘，全部在一个工作台里完成。</p>
+      </div>
+      <div class="hero-meta">
+        <span>实时流式输出</span>
+        <span>可恢复会话</span>
+        <span>端到端可追溯</span>
+      </div>
+    </section>
 
     <!-- Dashboard -->
     <div id="page-dashboard" data-test="page-dashboard" class="page">
       <div class="card">
-        <h2>Dashboard</h2>
+        <h2>任务工作台</h2>
+        <p class="page-subtitle">优先关注运行中与失败会话，快速定位需要介入的任务。</p>
         <div id="session-list" data-test="session-list"></div>
       </div>
     </div>
@@ -41,22 +62,23 @@
     <!-- Task Form -->
     <div id="page-task" data-test="page-task" class="page" style="display:none">
       <div class="card">
-        <h2>New Task</h2>
+        <h2>创建任务</h2>
+        <p class="page-subtitle">用一句清晰目标驱动智能体，必要时通过高级参数收敛行为。</p>
         <form id="task-form" data-test="task-form">
           <div class="form-group">
-            <label for="task-input">Task Description</label>
-            <textarea id="task-input" aria-label="Task" rows="3"></textarea>
+            <label for="task-input">任务描述</label>
+            <textarea id="task-input" aria-label="任务描述" rows="3" placeholder="例如：梳理最近失败任务的根因并输出修复建议"></textarea>
           </div>
           <div class="form-group">
-            <label for="task-type">Task Type</label>
-            <select id="task-type" aria-label="Task Type">
-              <option value="coding">Coding</option>
-              <option value="research">Research</option>
-              <option value="file_workflow">File Workflow</option>
-              <option value="general">General</option>
+            <label for="task-type">任务类型</label>
+            <select id="task-type" aria-label="任务类型">
+              <option value="coding">编码执行</option>
+              <option value="research">研究分析</option>
+              <option value="file_workflow">文件流处理</option>
+              <option value="general">通用任务</option>
             </select>
           </div>
-          <button type="submit" id="run-task-btn">Run Task</button>
+          <button type="submit" id="run-task-btn">开始执行</button>
           <div id="task-validation-error" data-test="task-validation-error" style="display:none"></div>
         </form>
       </div>
@@ -65,20 +87,20 @@
     <!-- Stream -->
     <div id="page-stream" data-test="page-stream" class="page" style="display:none">
       <div class="card">
-        <h2>Session Stream</h2>
-        <div>Session ID: <code id="session-id" data-test="session-id"></code></div>
+        <h2>会话流</h2>
+        <div>会话 ID：<code id="session-id" data-test="session-id"></code></div>
         <div id="session-stream" data-test="session-stream"></div>
         <div id="stream-disconnected" data-test="stream-disconnected" style="display:none"></div>
-        <a id="view-detail-link" data-test="view-detail-link" style="display:none">View Session Detail</a>
+        <a id="view-detail-link" data-test="view-detail-link" style="display:none">查看会话详情</a>
       </div>
     </div>
 
     <!-- Detail -->
     <div id="page-detail" data-test="page-detail" class="page" style="display:none">
       <div class="card">
-        <h2>Session Detail</h2>
+        <h2>会话详情</h2>
         <div id="session-detail" data-test="session-detail"></div>
-        <button id="resume-btn" data-test="resume-btn" style="display:none">Resume</button>
+        <button id="resume-btn" data-test="resume-btn" style="display:none">继续执行</button>
       </div>
     </div>
 
@@ -87,7 +109,7 @@
   </div>
 
   <div id="disconnect-btn-container" style="text-align:right;padding:8px;">
-    <button id="disconnect-btn" style="display:none;">Disconnect</button>
+    <button id="disconnect-btn" style="display:none;">断开连接</button>
   </div>
 
   <script src="/web/js/auth.js"></script>
