@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -118,8 +119,15 @@ func TestServerStartsAndExposesHealthEndpoint(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /healthz status = %d, want 200", rec.Code)
 	}
-	if body := rec.Body.String(); body != "{\"status\":\"ok\"}\n" {
-		t.Fatalf("GET /healthz body = %q", body)
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode /healthz response: %v", err)
+	}
+	if got, _ := payload["status"].(string); got != "ok" {
+		t.Fatalf("GET /healthz status field = %q, want ok", got)
+	}
+	if got, _ := payload["dev_token"].(string); got == "" {
+		t.Fatalf("GET /healthz dev_token should not be empty")
 	}
 	if !shutdownCalled {
 		t.Fatal("http shutdown was not called")

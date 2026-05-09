@@ -163,7 +163,7 @@ func TestDashScopeStreamParsesSSE(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewDashScopeProvider("qwen3.6-plus", server.URL, "key")
+	provider := NewDashScopeProvider("qwen3.6-plus", server.URL+"/apps/anthropic/v1", "key")
 	var events []domain.StreamingEvent
 	err := provider.Stream(context.Background(), Request{SystemPrompt: "sys", Input: "hello"}, func(event domain.StreamingEvent) error {
 		events = append(events, event)

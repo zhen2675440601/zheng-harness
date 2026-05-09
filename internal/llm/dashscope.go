@@ -20,6 +20,13 @@ const (
 	dashScopeMaxTokens              = 4096
 )
 
+type dashScopeProtocol string
+
+const (
+	dashScopeProtocolAnthropic dashScopeProtocol = "anthropic"
+	dashScopeProtocolOpenAI    dashScopeProtocol = "openai"
+)
+
 // DashScopeProvider 基于 DashScope 的 Anthropic 兼容 API 实现 Provider 契约。
 type DashScopeProvider struct {
 	model   string
@@ -105,6 +112,10 @@ func (p DashScopeProvider) Generate(ctx context.Context, request Request) (Respo
 		return Response{}, errors.New("dashscope API key must not be empty")
 	}
 
+	if p.protocol() == dashScopeProtocolOpenAI {
+		return p.generateOpenAICompat(ctx, request)
+	}
+
 	payload := dashScopeGenerateRequest{
 		Model:  p.model,
 		System: request.SystemPrompt,
@@ -148,13 +159,17 @@ func (p DashScopeProvider) Generate(ctx context.Context, request Request) (Respo
 		return Response{}, fmt.Errorf("read dashscope response: %w", err)
 	}
 
-	var apiResponse dashScopeGenerateResponse
-	if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
-		return Response{}, fmt.Errorf("decode dashscope response: %w", err)
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		var apiResponse dashScopeGenerateResponse
+		if err := json.Unmarshal(responseBody, &apiResponse); err == nil {
+			return Response{}, fmt.Errorf("dashscope request failed with status %d: %s", httpResponse.StatusCode, dashScopeErrorMessage(apiResponse))
+		}
+		return Response{}, fmt.Errorf("dashscope request failed with status %d: %s", httpResponse.StatusCode, summarizeRawBody(responseBody))
 	}
 
-	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		return Response{}, fmt.Errorf("dashscope request failed with status %d: %s", httpResponse.StatusCode, dashScopeErrorMessage(apiResponse))
+	var apiResponse dashScopeGenerateResponse
+	if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
+		return Response{}, fmt.Errorf("decode dashscope response: %w (body=%s)", err, summarizeRawBody(responseBody))
 	}
 
 	output := dashScopeOutputText(apiResponse.Content)
@@ -174,6 +189,18 @@ func (p DashScopeProvider) Generate(ctx context.Context, request Request) (Respo
 	}, nil
 }
 
+func summarizeRawBody(body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return "<empty body>"
+	}
+	const max = 220
+	if len(trimmed) <= max {
+		return trimmed
+	}
+	return trimmed[:max] + "..."
+}
+
 func (p DashScopeProvider) Stream(ctx context.Context, request Request, emit func(domain.StreamingEvent) error) error {
 	if p.model == "" {
 		return errors.New("dashscope model must not be empty")
@@ -183,6 +210,10 @@ func (p DashScopeProvider) Stream(ctx context.Context, request Request, emit fun
 	}
 	if p.apiKey == "" {
 		return errors.New("dashscope API key must not be empty")
+	}
+
+	if p.protocol() == dashScopeProtocolOpenAI {
+		return p.streamOpenAICompat(ctx, request, emit)
 	}
 
 	payload := dashScopeGenerateRequest{
@@ -226,7 +257,7 @@ func (p DashScopeProvider) Stream(ctx context.Context, request Request, emit fun
 		var apiResponse dashScopeGenerateResponse
 		if len(responseBody) > 0 {
 			if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
-				return fmt.Errorf("decode dashscope stream response: %w", err)
+				return fmt.Errorf("decode dashscope stream response: %w (body=%s)", err, summarizeRawBody(responseBody))
 			}
 		}
 
@@ -292,4 +323,150 @@ func dashScopeOutputText(content []dashScopeContentResponse) string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+func (p DashScopeProvider) protocol() dashScopeProtocol {
+	if strings.Contains(strings.ToLower(p.baseURL), "/apps/anthropic") {
+		return dashScopeProtocolAnthropic
+	}
+	return dashScopeProtocolOpenAI
+}
+
+func (p DashScopeProvider) generateOpenAICompat(ctx context.Context, request Request) (Response, error) {
+	payload := openAIChatCompletionRequest{
+		Model: p.model,
+		Messages: []openAIMessage{
+			{Role: "system", Content: request.SystemPrompt},
+			{Role: "user", Content: request.Input},
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return Response{}, fmt.Errorf("marshal dashscope openai-compatible request: %w", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return Response{}, fmt.Errorf("create dashscope openai-compatible request: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("x-api-key", p.apiKey)
+	httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	httpResponse, err := p.client.Do(httpRequest)
+	if err != nil {
+		return Response{}, fmt.Errorf("send dashscope openai-compatible request: %w", err)
+	}
+	defer httpResponse.Body.Close()
+
+	responseBody, err := io.ReadAll(httpResponse.Body)
+	if err != nil {
+		return Response{}, fmt.Errorf("read dashscope openai-compatible response: %w", err)
+	}
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		var apiResponse openAIChatCompletionResponse
+		if err := json.Unmarshal(responseBody, &apiResponse); err == nil {
+			return Response{}, fmt.Errorf("dashscope openai-compatible request failed with status %d: %s", httpResponse.StatusCode, openAIErrorMessage(apiResponse))
+		}
+		return Response{}, fmt.Errorf("dashscope openai-compatible request failed with status %d: %s", httpResponse.StatusCode, summarizeRawBody(responseBody))
+	}
+
+	var apiResponse openAIChatCompletionResponse
+	if err := json.Unmarshal(responseBody, &apiResponse); err != nil {
+		return Response{}, fmt.Errorf("decode dashscope openai-compatible response: %w (body=%s)", err, summarizeRawBody(responseBody))
+	}
+	if len(apiResponse.Choices) == 0 {
+		return Response{}, errors.New("dashscope openai-compatible response contained no choices")
+	}
+
+	output := strings.TrimSpace(apiResponse.Choices[0].Message.Content)
+	if output == "" {
+		return Response{}, errors.New("dashscope openai-compatible response contained empty content")
+	}
+
+	model := strings.TrimSpace(apiResponse.Model)
+	if model == "" {
+		model = p.model
+	}
+
+	return Response{Model: model, Output: output, StopReason: apiResponse.Choices[0].FinishReason}, nil
+}
+
+func (p DashScopeProvider) streamOpenAICompat(ctx context.Context, request Request, emit func(domain.StreamingEvent) error) error {
+	payload := openAIChatCompletionRequest{
+		Model: p.model,
+		Messages: []openAIMessage{
+			{Role: "system", Content: request.SystemPrompt},
+			{Role: "user", Content: request.Input},
+		},
+		Stream: true,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal dashscope openai-compatible stream request: %w", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create dashscope openai-compatible stream request: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "text/event-stream")
+	httpRequest.Header.Set("x-api-key", p.apiKey)
+	httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	httpResponse, err := p.client.Do(httpRequest)
+	if err != nil {
+		return fmt.Errorf("send dashscope openai-compatible stream request: %w", err)
+	}
+	defer httpResponse.Body.Close()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, err := io.ReadAll(httpResponse.Body)
+		if err != nil {
+			return fmt.Errorf("read dashscope openai-compatible stream response: %w", err)
+		}
+
+		var apiResponse openAIChatCompletionResponse
+		if len(responseBody) > 0 {
+			if err := json.Unmarshal(responseBody, &apiResponse); err == nil {
+				return fmt.Errorf("dashscope openai-compatible request failed with status %d: %s", httpResponse.StatusCode, openAIErrorMessage(apiResponse))
+			}
+		}
+
+		return fmt.Errorf("dashscope openai-compatible request failed with status %d: %s", httpResponse.StatusCode, summarizeRawBody(responseBody))
+	}
+
+	if err := ParseSSE(ctx, httpResponse.Body, func(chunk string) error {
+		var event openAIChatCompletionResponse
+		if err := json.Unmarshal([]byte(chunk), &event); err != nil {
+			return fmt.Errorf("decode dashscope openai-compatible stream chunk: %w", err)
+		}
+		if len(event.Choices) == 0 {
+			return nil
+		}
+
+		delta := strings.TrimSpace(event.Choices[0].Delta.Content)
+		if delta == "" {
+			return nil
+		}
+
+		streamEvent, err := domain.TokenDelta(0, delta)
+		if err != nil {
+			return fmt.Errorf("create dashscope openai-compatible token event: %w", err)
+		}
+		return emit(*streamEvent)
+	}); err != nil {
+		return err
+	}
+
+	completeEvent, err := domain.SessionComplete("", "success")
+	if err != nil {
+		return fmt.Errorf("create dashscope openai-compatible session complete event: %w", err)
+	}
+	return emit(*completeEvent)
 }

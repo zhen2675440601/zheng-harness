@@ -20,7 +20,7 @@ func TestDashScopeProviderGenerateTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewDashScopeProvider("qwen", server.URL, "key")
+	provider := NewDashScopeProvider("qwen", server.URL+"/apps/anthropic/v1", "key")
 	provider.client.Timeout = 50 * time.Millisecond
 
 	_, err := provider.Generate(context.Background(), Request{SystemPrompt: "sys", Input: "hello"})
@@ -42,7 +42,7 @@ func TestDashScopeProviderGenerateNon2xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewDashScopeProvider("qwen", server.URL, "key")
+	provider := NewDashScopeProvider("qwen", server.URL+"/apps/anthropic/v1", "key")
 
 	_, err := provider.Generate(context.Background(), Request{SystemPrompt: "sys", Input: "hello"})
 	if err == nil {
@@ -65,7 +65,7 @@ func TestDashScopeProviderGenerateEmptyContent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewDashScopeProvider("qwen", server.URL, "key")
+	provider := NewDashScopeProvider("qwen", server.URL+"/apps/anthropic/v1", "key")
 
 	_, err := provider.Generate(context.Background(), Request{SystemPrompt: "sys", Input: "hello"})
 	if err == nil {
@@ -91,7 +91,7 @@ func TestDashScopeProviderGenerateSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewDashScopeProvider("qwen3.6-plus", server.URL, "key")
+	provider := NewDashScopeProvider("qwen3.6-plus", server.URL+"/apps/anthropic/v1", "key")
 
 	resp, err := provider.Generate(context.Background(), Request{SystemPrompt: "sys", Input: "hello"})
 	if err != nil {

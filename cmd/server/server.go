@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -237,7 +240,17 @@ func registerRoutesWithWebFS(router chi.Router, api *serverapi.API, webAssets fs
 	router.Use(middleware.RequestID)
 	router.Use(api.Recoverer)
 	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		serverapi.WriteJSONForServer(w, http.StatusOK, map[string]any{"status": "ok"})
+		secret := api.JWTSecret
+		var token string
+		if secret != "" {
+			now := time.Now()
+			hdr := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+			payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"sub":"dev","iat":%d,"exp":%d}`, now.Unix(), now.Add(8*time.Hour).Unix())))
+			mac := hmac.New(sha256.New, []byte(secret))
+			_, _ = mac.Write([]byte(hdr + "." + payload))
+			token = hdr + "." + payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		}
+		serverapi.WriteJSONForServer(w, http.StatusOK, map[string]any{"status": "ok", "dev_token": token})
 	})
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Use(api.AuthMiddleware)

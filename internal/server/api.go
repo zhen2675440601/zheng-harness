@@ -208,7 +208,7 @@ func (a *API) HandleRun(w http.ResponseWriter, r *http.Request) error {
 		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: "save task metadata", err: err}
 	}
 
-	if _, err := a.Manager.Start(r.Context(), runtime.SessionStartRequest{
+	if _, err := a.Manager.Start(context.Background(), runtime.SessionStartRequest{
 		SessionID: sessionID,
 		Task:      task,
 		NewRunner: func(events *runtime.EventChannel) (runtime.SessionRunner, error) {
@@ -270,7 +270,7 @@ func (a *API) HandleResume(w http.ResponseWriter, r *http.Request) error {
 		continuedTask.CreatedAt = inspected.Session.CreatedAt
 	}
 
-	if _, err := a.Manager.Start(r.Context(), runtime.SessionStartRequest{
+	if _, err := a.Manager.Start(context.Background(), runtime.SessionStartRequest{
 		SessionID: sessionID,
 		Task:      continuedTask,
 		NewRunner: func(events *runtime.EventChannel) (runtime.SessionRunner, error) {
