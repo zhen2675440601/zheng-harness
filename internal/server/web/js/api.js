@@ -20,8 +20,8 @@
       auth.clearToken();
     }
     window.dispatchEvent(new CustomEvent('zh:auth-required'));
-    if (window.location.hash !== '#/') {
-      window.location.hash = '#/';
+    if (window.location.hash !== '#/chat') {
+      window.location.hash = '#/chat';
     }
   }
 
@@ -91,6 +91,35 @@
       query.set('status', String(status));
     }
     return request('/api/v1/sessions?' + query.toString());
+  }
+
+  function apiStartChat(task) {
+    return request('/api/v1/chat/start', {
+      method: 'POST',
+      body: JSON.stringify(task || {}),
+    });
+  }
+
+  function apiReplyChat(conversationId, message) {
+    return request('/api/v1/chat/' + encodeURIComponent(conversationId) + '/reply', {
+      method: 'POST',
+      body: JSON.stringify({ message: message }),
+    });
+  }
+
+  function apiGetTranscript(conversationId) {
+    return request('/api/v1/chat/' + encodeURIComponent(conversationId) + '/transcript');
+  }
+
+  function apiListChats(params) {
+    var query = new URLSearchParams();
+    var normalized = params || {};
+    query.set('page', String(normalized.page || 1));
+    query.set('page_size', String(normalized.pageSize || 20));
+    if (normalized.status) {
+      query.set('status', String(normalized.status));
+    }
+    return request('/api/v1/chat/conversations?' + query.toString());
   }
 
   function readSSEStream(response, handlers) {
@@ -187,7 +216,14 @@
         handlers.onOpen();
       }
       return readSSEStream(response, handlers);
+    }).then(function () {
+      if (typeof handlers.onComplete === 'function') {
+        handlers.onComplete();
+      }
     }).catch(function (error) {
+      if (controller && controller.signal && controller.signal.aborted) {
+        return;
+      }
       if (typeof handlers.onError === 'function') {
         handlers.onError(error);
       }
@@ -199,15 +235,19 @@
           controller.abort();
         }
       },
-      controller: controller,
     };
   }
 
   window.ZhengAPI = {
+    request: request,
     apiRun: apiRun,
     apiResume: apiResume,
     apiInspect: apiInspect,
     apiListSessions: apiListSessions,
+    apiStartChat: apiStartChat,
+    apiReplyChat: apiReplyChat,
+    apiGetTranscript: apiGetTranscript,
+    apiListChats: apiListChats,
     apiStream: apiStream,
   };
 })();

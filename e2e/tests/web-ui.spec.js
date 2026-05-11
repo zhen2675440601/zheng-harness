@@ -4,21 +4,17 @@ const { makeJWT, startServer, stopServer } = require('../server-harness');
 const validToken = makeJWT();
 
 async function connect(page, token = validToken) {
-  // Approach: set JWT in localStorage, then reload to trigger bootstrapStoredToken()
   await page.goto('/', { waitUntil: 'networkidle' });
   await page.waitForSelector('#auth-screen', { state: 'visible' });
 
-  // Set the token directly in localStorage (bypasses click handler issues)
   await page.evaluate((t) => {
     window.localStorage.setItem('zhengHarness.jwt', t);
   }, token);
 
-  // Reload to trigger bootstrapStoredToken which auto-connects
   await page.reload({ waitUntil: 'networkidle' });
 
-  // After reload, the stored token should trigger auto-connect
   await expect(page.locator('#main-content')).toBeVisible({ timeout: 15000 });
-  await expect(page.locator('#page-dashboard')).toBeVisible();
+  await expect(page.locator('#page-chat')).toBeVisible();
 }
 
 async function createSessionViaAPI(request, task) {
@@ -50,7 +46,7 @@ test.afterEach(async () => {
 
 test.describe('WebUI', () => {
   test.describe('auth', () => {
-    test('WebUI: Loads root page and shows auth screen', async ({ page }) => {
+    test('WebUI: loads root page and shows auth screen', async ({ page }) => {
       const response = await page.goto('/');
       expect(response).not.toBeNull();
       expect(response.ok()).toBeTruthy();
@@ -58,13 +54,13 @@ test.describe('WebUI', () => {
       await expect(page.getByText(/Authentication|连接 Harness 智能体/)).toBeVisible();
     });
 
-    test('WebUI: Connecting with valid JWT shows connected state', async ({ page }) => {
+    test('WebUI: connecting with valid JWT shows chat workspace', async ({ page }) => {
       await connect(page);
       await expect(page.locator('#main-content')).toBeVisible();
-      await expect(page.locator('#session-list')).toBeVisible();
+      await expect(page.locator('#conversation-list')).toBeVisible();
     });
 
-    test('WebUI: Invalid JWT shows auth error', async ({ page }) => {
+    test('WebUI: invalid JWT shows auth error', async ({ page }) => {
       await page.goto('/');
       await page.getByLabel(/JWT Token|JWT 令牌/).fill('bad.token.value');
       await page.getByRole('button', { name: /Connect|连接/ }).click();
@@ -73,56 +69,52 @@ test.describe('WebUI', () => {
     });
   });
 
-  test.describe('task form', () => {
-    test('WebUI: Task form validates empty input', async ({ page }) => {
+  test.describe('composer', () => {
+    test('WebUI: composer validates empty input', async ({ page }) => {
       await connect(page);
-      await page.getByRole('link', { name: /New Task|新建任务/ }).click();
-      await page.getByRole('button', { name: /Run Task|开始执行/ }).click();
-      await expect(page.locator('#task-validation-error')).toBeVisible();
-      await expect(page.locator('#task-validation-error')).toContainText(/Task description is required\.|任务描述不能为空。/);
+      await page.getByRole('button', { name: /发送消息/ }).click();
+      await expect(page.locator('#composer-validation-error')).toBeVisible();
+      await expect(page.locator('#composer-validation-error')).toContainText(/请输入消息后再发送。/);
     });
   });
 
-  test.describe('dashboard', () => {
-    test('WebUI: Session list loads and shows sessions', async ({ page, request }) => {
-      await createSessionViaAPI(request, 'dashboard test session');
+  test.describe('history', () => {
+    test('WebUI: conversation list loads and shows sessions', async ({ page, request }) => {
+      await createSessionViaAPI(request, 'history test session');
       await connect(page);
-      // Verify the dashboard loaded with at least one session and navigation elements
-      await expect(page.locator('#session-list')).toContainText(/View details|查看详情/);
-      await expect(page.locator('#session-list')).toContainText(/Page|第/);
+      await expect(page.locator('#conversation-list')).toContainText(/history test session/);
     });
 
-    test('WebUI: Session detail renders inspect data', async ({ page, request }) => {
+    test('WebUI: inspect panel renders session data for selected conversation', async ({ page, request }) => {
       const created = await createSessionViaAPI(request, 'detail test session');
       await connect(page);
-      await page.goto(`/#/detail/${created.session_id}`);
-      await expect(page.locator('#page-detail')).toBeVisible();
-      await expect(page.locator('#session-detail')).toContainText(/Session ID|会话 ID/);
-      await expect(page.locator('#session-detail')).toContainText(/Status|状态/);
+      await page.getByRole('button', { name: /历史会话/ }).click();
+      await page.locator('[data-action="open-chat"]').first().click();
+      await page.getByRole('button', { name: /查看 Inspect/ }).click();
+      await expect(page.locator('#inspect-detail')).toContainText(created.session_id);
+      await expect(page.locator('#inspect-detail')).toContainText(/状态|Status/);
     });
   });
 
   test.describe('stream', () => {
-    test('WebUI: Live session stream renders events', async ({ page }) => {
+    test('WebUI: live conversation stream renders events', async ({ page }) => {
       await connect(page);
-      await page.getByRole('link', { name: /New Task|新建任务/ }).click();
-      await page.getByRole('textbox', { name: /Task|任务描述/ }).fill('stream session from browser');
-      await page.getByRole('button', { name: /Run Task|开始执行/ }).click();
+      await page.getByRole('textbox', { name: /消息内容/ }).fill('stream session from browser');
+      await page.getByRole('button', { name: /发送消息/ }).click();
 
-      await expect(page.locator('#page-stream')).toBeVisible();
-      await expect(page.locator('#session-id')).not.toHaveText('');
-      await expect(page.locator('#session-stream')).toContainText(/Connecting to session stream|Streaming live session output|Session complete:|正在连接会话流|正在实时推送会话输出|会话已完成：/);
-      await expect(page.locator('#stream-events')).toContainText(/SESSION COMPLETE|STEP COMPLETE|ERROR|TOKEN STREAM/);
+      await expect(page.locator('#page-chat')).toBeVisible();
+      await expect(page.locator('#conversation-id')).not.toHaveText('未创建');
+      await expect(page.locator('#conversation-stream')).toContainText(/user|assistant|流式中|会话已完成：|正在连接会话流|正在实时推送会话输出/, { timeout: 15000 });
     });
 
-    test('WebUI: Stream route shows disconnected notice on stream error', async ({ page }) => {
+    test('WebUI: missing conversation route surfaces load failure', async ({ page }) => {
       await connect(page);
-      await page.goto('/#/stream/session-does-not-exist');
-      await expect(page.locator('#page-stream')).toBeVisible();
-      await expect(page.locator('#stream-disconnected')).toContainText('Stream disconnected', { timeout: 15000 });
+      await page.goto('/#/chat/conversation-does-not-exist');
+      await expect(page.locator('#page-chat')).toBeVisible();
+      await expect(page.locator('#composer-error')).toContainText(/加载对话失败|not found/i, { timeout: 15000 });
     });
 
-    test('WebUI: Stream tolerates malformed SSE payload and still completes', async ({ page }) => {
+    test('WebUI: malformed SSE payload still completes current stream', async ({ page }) => {
       await page.route('**/api/v1/sessions/*/stream', async (route) => {
         await route.fulfill({
           status: 200,
@@ -142,10 +134,9 @@ test.describe('WebUI', () => {
       });
 
       await connect(page);
-      await page.goto('/#/stream/session-malformed');
-      await expect(page.locator('#page-stream')).toBeVisible();
-      await expect(page.locator('#session-stream')).toContainText(/Session complete:|会话已完成：/, { timeout: 15000 });
-      await expect(page.locator('#view-detail-link')).toBeVisible();
+      await page.getByRole('textbox', { name: /消息内容/ }).fill('malformed sse test');
+      await page.getByRole('button', { name: /发送消息/ }).click();
+      await expect(page.locator('#conversation-stream')).toContainText(/会话已完成：/, { timeout: 15000 });
     });
   });
 });
