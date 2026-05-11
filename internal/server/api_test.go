@@ -123,6 +123,195 @@ func TestRunAcceptedWithAuthenticatedRequest(t *testing.T) {
 	_ = h.manager.Shutdown(context.Background())
 }
 
+func TestChatStartReplyTranscriptAndList(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	firstBlock := make(chan struct{})
+	secondBlock := make(chan struct{})
+	callCount := 0
+	h.api.EngineFactory = func(_ *runtime.EventChannel, task domain.Task, _ int, _ string) (runtime.SessionRunner, error) {
+		callCount++
+		switch callCount {
+		case 1:
+			if task.Description != "hello" {
+				t.Fatalf("first task = %#v", task)
+			}
+			return runnerFunc(func(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
+				select {
+				case <-ctx.Done():
+					return domain.Session{}, domain.Plan{}, nil, ctx.Err()
+				case <-firstBlock:
+				}
+				now := time.Now().UTC()
+				if err := h.sessionStore.SaveSession(ctx, domain.Session{ID: task.ID, TaskID: task.ID, Status: domain.SessionStatusSuccess, CreatedAt: now, UpdatedAt: now}); err != nil {
+					return domain.Session{}, domain.Plan{}, nil, err
+				}
+				return domain.Session{ID: task.ID, TaskID: task.ID, Status: domain.SessionStatusSuccess, CreatedAt: now, UpdatedAt: now}, domain.Plan{ID: "plan-" + task.ID, TaskID: task.ID, Summary: task.Description, CreatedAt: now}, nil, nil
+			}), nil
+		case 2:
+			if task.Description != "follow-up" {
+				t.Fatalf("second task = %#v", task)
+			}
+			return blockingRunner{done: secondBlock}, nil
+		default:
+			t.Fatalf("unexpected engine start count %d", callCount)
+			return blockingRunner{done: secondBlock}, nil
+		}
+	}
+
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost, "/api/v1/chat/start", bytes.NewBufferString(`{"message":"hello","task_type":"coding"}`))
+	startReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/v1/chat/start status = %d, want 202 body=%s", startRec.Code, startRec.Body.String())
+	}
+	var startPayload chatStartResponse
+	if err := json.Unmarshal(startRec.Body.Bytes(), &startPayload); err != nil {
+		t.Fatalf("unmarshal start payload: %v", err)
+	}
+	if startPayload.ConversationID == "" || startPayload.SessionID == "" || startPayload.ConversationID == startPayload.SessionID {
+		t.Fatalf("unexpected start payload = %#v", startPayload)
+	}
+
+	close(firstBlock)
+	time.Sleep(50 * time.Millisecond)
+
+	replyRec := httptest.NewRecorder()
+	replyReq := httptest.NewRequest(http.MethodPost, "/api/v1/chat/"+startPayload.ConversationID+"/reply", bytes.NewBufferString(`{"message":"follow-up"}`))
+	replyReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(replyRec, replyReq)
+	if replyRec.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/v1/chat/{conversation_id}/reply status = %d, want 202 body=%s", replyRec.Code, replyRec.Body.String())
+	}
+	var replyPayload chatReplyResponse
+	if err := json.Unmarshal(replyRec.Body.Bytes(), &replyPayload); err != nil {
+		t.Fatalf("unmarshal reply payload: %v", err)
+	}
+	if replyPayload.ConversationID != startPayload.ConversationID || replyPayload.TurnIndex != 1 {
+		t.Fatalf("unexpected reply payload = %#v", replyPayload)
+	}
+
+	listRec := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/chat/conversations", nil)
+	listReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/chat/conversations status = %d, want 200 body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listPayload struct {
+		Conversations []map[string]any `json:"conversations"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("unmarshal list payload: %v", err)
+	}
+	if len(listPayload.Conversations) == 0 {
+		t.Fatal("expected at least one conversation")
+	}
+
+	transcriptRec := httptest.NewRecorder()
+	transcriptReq := httptest.NewRequest(http.MethodGet, "/api/v1/chat/"+startPayload.ConversationID+"/transcript", nil)
+	transcriptReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(transcriptRec, transcriptReq)
+	if transcriptRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/chat/{conversation_id}/transcript status = %d, want 200 body=%s", transcriptRec.Code, transcriptRec.Body.String())
+	}
+	var transcriptPayload chatTranscriptResponse
+	if err := json.Unmarshal(transcriptRec.Body.Bytes(), &transcriptPayload); err != nil {
+		t.Fatalf("unmarshal transcript payload: %v", err)
+	}
+	if transcriptPayload.ConversationID != startPayload.ConversationID || len(transcriptPayload.Messages) == 0 {
+		t.Fatalf("unexpected transcript payload = %#v", transcriptPayload)
+	}
+	close(secondBlock)
+	_ = h.manager.Shutdown(context.Background())
+}
+
+func TestChatEndpointsRequireAuthentication(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "start", method: http.MethodPost, path: "/api/v1/chat/start", body: `{"message":"hello"}`},
+		{name: "reply", method: http.MethodPost, path: "/api/v1/chat/missing/reply", body: `{"message":"hello"}`},
+		{name: "transcript", method: http.MethodGet, path: "/api/v1/chat/missing/transcript"},
+		{name: "list", method: http.MethodGet, path: "/api/v1/chat/conversations"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := httptest.NewRecorder()
+			var body io.Reader
+			if tc.body != "" {
+				body = bytes.NewBufferString(tc.body)
+			}
+			req := httptest.NewRequest(tc.method, tc.path, body)
+			h.router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s status = %d, want 401", tc.method, tc.path, rec.Code)
+			}
+		})
+	}
+}
+
+func TestChatReplyReturns404ForMissingConversation(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/missing/reply", bytes.NewBufferString(`{"message":"follow-up"}`))
+	req.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("POST /api/v1/chat/{conversation_id}/reply status = %d, want 404 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatTranscriptReturns404ForMissingConversation(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/missing/transcript", nil)
+	req.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/v1/chat/{conversation_id}/transcript status = %d, want 404 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatReplyReturns409ForRunningConversation(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	block := make(chan struct{})
+	h.api.EngineFactory = func(_ *runtime.EventChannel, _ domain.Task, _ int, _ string) (runtime.SessionRunner, error) {
+		return blockingRunner{done: block}, nil
+	}
+
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost, "/api/v1/chat/start", bytes.NewBufferString(`{"message":"hello"}`))
+	startReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/v1/chat/start status = %d, want 202 body=%s", startRec.Code, startRec.Body.String())
+	}
+	var startPayload chatStartResponse
+	if err := json.Unmarshal(startRec.Body.Bytes(), &startPayload); err != nil {
+		t.Fatalf("unmarshal start payload: %v", err)
+	}
+
+	replyRec := httptest.NewRecorder()
+	replyReq := httptest.NewRequest(http.MethodPost, "/api/v1/chat/"+startPayload.ConversationID+"/reply", bytes.NewBufferString(`{"message":"follow-up"}`))
+	replyReq.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(replyRec, replyReq)
+	if replyRec.Code != http.StatusConflict {
+		t.Fatalf("POST /api/v1/chat/{conversation_id}/reply status = %d, want 409 body=%s", replyRec.Code, replyRec.Body.String())
+	}
+	close(block)
+	_ = h.manager.Shutdown(context.Background())
+}
+
 func TestSessionIDContractUsesSessionIDFieldOnly(t *testing.T) {
 	t.Parallel()
 	h := newTestAPIHarness(t)
@@ -1037,6 +1226,10 @@ func newTestAPIHarnessWithOptions(t *testing.T, opts testAPIHarnessOptions) test
 		r.Use(api.AuthMiddleware)
 		r.Post("/run", api.JSON(api.HandleRun))
 		r.Post("/resume", api.JSON(api.HandleResume))
+		r.Post("/chat/start", api.JSON(api.HandleChatStart))
+		r.Post("/chat/{conversation_id}/reply", api.JSON(api.HandleChatReply))
+		r.Get("/chat/{conversation_id}/transcript", api.JSON(api.HandleChatTranscript))
+		r.Get("/chat/conversations", api.JSON(api.HandleChatList))
 		r.Get("/sessions", api.JSON(api.HandleListSessions))
 		r.Get("/sessions/{id}/inspect", api.JSON(api.HandleInspect))
 		r.Get("/sessions/{id}/stream", api.JSON(api.HandleStream))
@@ -1094,6 +1287,7 @@ func makeJWT(t *testing.T, secret string, exp time.Time) string {
 	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return fmt.Sprintf("%s.%s", signingInput, signature)
 }
+
 
 func startSession(t *testing.T, h testAPIHarness, body string) sessionAcceptedResponse {
 	t.Helper()

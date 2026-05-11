@@ -21,6 +21,7 @@ import (
 	"zheng-harness/internal/domain"
 	"zheng-harness/internal/runtime"
 	"zheng-harness/internal/runtimebuilder"
+	"zheng-harness/internal/service"
 	"zheng-harness/internal/store"
 )
 
@@ -31,6 +32,7 @@ type API struct {
 	MemoryStore    *store.SQLiteMemoryStore
 	Manager        *runtime.SessionManager
 	Builder        *runtimebuilder.Builder
+	Service        *service.ChatService
 	Config         config.Config
 	JWTSecret      string
 	Clock          func() time.Time
@@ -53,10 +55,47 @@ type resumeRequest struct {
 	SessionID string `json:"session_id"`
 }
 
+type chatStartRequest struct {
+	Message    string `json:"message"`
+	TaskType   string `json:"task_type"`
+	MaxSteps   int    `json:"max_steps"`
+	VerifyMode string `json:"verify_mode"`
+}
+
+type chatReplyRequest struct {
+	Message string `json:"message"`
+}
+
 type sessionAcceptedResponse struct {
 	SessionID string `json:"session_id"`
 	Status    string `json:"status"`
 	StreamURL string `json:"stream_url"`
+}
+
+type chatStartResponse struct {
+	ConversationID string `json:"conversation_id"`
+	SessionID      string `json:"session_id"`
+	Status         string `json:"status"`
+	StreamURL      string `json:"stream_url"`
+}
+
+type chatReplyResponse struct {
+	ConversationID string `json:"conversation_id"`
+	TurnIndex      int    `json:"turn_index"`
+	StreamURL      string `json:"stream_url"`
+}
+
+type chatTranscriptResponse struct {
+	ConversationID string              `json:"conversation_id"`
+	Status         string              `json:"status"`
+	Messages       []transcriptMessage `json:"messages"`
+}
+
+type transcriptMessage struct {
+	TurnIndex int    `json:"turn_index"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Timestamp string `json:"timestamp"`
 }
 
 type inspectResponse struct {
@@ -178,57 +217,16 @@ func (a *API) HandleRun(w http.ResponseWriter, r *http.Request) error {
 	if err := decodeJSON(r, &req); err != nil {
 		return err
 	}
-	taskText := strings.TrimSpace(req.Task)
-	if taskText == "" {
-		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "task is required"}
-	}
-	if req.MaxSteps < 0 {
-		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "max_steps must be greater than or equal to zero"}
-	}
-	verifyMode := strings.TrimSpace(req.VerifyMode)
-	if verifyMode != "" && !isSupportedVerifyMode(verifyMode) {
-		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "verify_mode must be one of off, standard, strict"}
+	result, err := a.chatService().StartConversation(r.Context(), req.Task, service.StartConversationOptions{
+		TaskType:   req.TaskType,
+		MaxSteps:   req.MaxSteps,
+		VerifyMode: req.VerifyMode,
+	})
+	if err != nil {
+		return a.mapServiceError(err, "start session")
 	}
 
-	now := a.now().UTC()
-	sessionID := fmt.Sprintf("session-%d", now.UnixNano())
-	task := domain.Task{
-		ID:          sessionID,
-		Description: taskText,
-		Goal:        taskText,
-		Category:    domain.TaskCategory(strings.TrimSpace(req.TaskType)).Normalize(),
-		CreatedAt:   now,
-	}.Normalize()
-
-	initial := domain.Session{ID: sessionID, TaskID: sessionID, Status: domain.SessionStatusPending, CreatedAt: now, UpdatedAt: now}
-	if err := a.SessionStore.SaveSession(r.Context(), initial); err != nil {
-		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: "save initial session", err: err}
-	}
-	if err := a.SessionStore.SaveTask(r.Context(), sessionID, task); err != nil {
-		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: "save task metadata", err: err}
-	}
-
-	if _, err := a.Manager.Start(context.Background(), runtime.SessionStartRequest{
-		SessionID: sessionID,
-		Task:      task,
-		NewRunner: func(events *runtime.EventChannel) (runtime.SessionRunner, error) {
-			return a.newEngine(events, task, req.MaxSteps, verifyMode)
-		},
-		PersistFinal: func(ctx context.Context, result runtime.SessionActorResult) error {
-			if result.Err != nil && result.Session.Status == "" {
-				failed := domain.Session{
-					ID: result.SessionID, TaskID: result.SessionID,
-					Status: domain.SessionStatusFatalError, CreatedAt: now, UpdatedAt: a.now().UTC(),
-				}
-				_ = a.SessionStore.SaveSession(ctx, failed)
-			}
-			return nil
-		},
-	}); err != nil {
-		return a.mapStartError(err)
-	}
-
-	writeJSON(w, http.StatusAccepted, sessionAcceptedResponse{SessionID: sessionID, Status: "created", StreamURL: streamURL(sessionID)})
+	writeJSON(w, http.StatusAccepted, sessionAcceptedResponse{SessionID: result.SessionID, Status: result.Status, StreamURL: result.StreamURL})
 	return nil
 }
 
@@ -237,60 +235,102 @@ func (a *API) HandleResume(w http.ResponseWriter, r *http.Request) error {
 	if err := decodeJSON(r, &req); err != nil {
 		return err
 	}
-	sessionID := strings.TrimSpace(req.SessionID)
-	if sessionID == "" {
-		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "session_id is required"}
-	}
-	if actor, ok := a.Manager.Lookup(sessionID); ok {
-		snapshot := actor.Snapshot()
-		if snapshot.State == runtime.ActorStatePending || snapshot.State == runtime.ActorStateRunning {
-			return &apiError{status: http.StatusConflict, code: "conflict", message: "session already running"}
-		}
-	}
-
-	inspected, err := a.SessionStore.InspectSession(r.Context(), sessionID)
+	result, err := a.chatService().ResumeConversation(r.Context(), req.SessionID)
 	if err != nil {
-		return a.mapStoreError(err, sessionID)
-	}
-	if isTerminalStatus(inspected.Session.Status) {
-		return &apiError{status: http.StatusConflict, code: "conflict", message: "session is not resumable"}
+		return a.mapServiceError(err, "resume session")
 	}
 
-	// Validate persisted provenance before resuming (fail-closed semantics)
-	if inspErrors := a.validateProvenanceForResume(inspected.Session.Provenance); len(inspErrors) > 0 {
-		msg := strings.Join(inspErrors, "; ")
-		return &apiError{status: http.StatusConflict, code: "provenance_mismatch", message: "session cannot be resumed: " + msg}
-	}
+	writeJSON(w, http.StatusAccepted, sessionAcceptedResponse{SessionID: result.SessionID, Status: result.Status, StreamURL: result.StreamURL})
+	return nil
+}
 
-	continuedTask := inspected.Task
-	if continuedTask.ID == "" {
-		continuedTask.ID = sessionID
+func (a *API) HandleChatStart(w http.ResponseWriter, r *http.Request) error {
+	var req chatStartRequest
+	if err := decodeJSON(r, &req); err != nil {
+		return err
 	}
-	if continuedTask.CreatedAt.IsZero() {
-		continuedTask.CreatedAt = inspected.Session.CreatedAt
+	result, err := a.chatService().StartChat(r.Context(), service.StartChatRequest{
+		Message:    req.Message,
+		TaskType:   req.TaskType,
+		MaxSteps:   req.MaxSteps,
+		VerifyMode: req.VerifyMode,
+	})
+	if err != nil {
+		return a.mapServiceError(err, "start chat")
 	}
+	writeJSON(w, http.StatusAccepted, chatStartResponse{
+		ConversationID: result.ConversationID,
+		SessionID:      result.SessionID,
+		Status:         result.Status,
+		StreamURL:      result.StreamURL,
+	})
+	return nil
+}
 
-	if _, err := a.Manager.Start(context.Background(), runtime.SessionStartRequest{
-		SessionID: sessionID,
-		Task:      continuedTask,
-		NewRunner: func(events *runtime.EventChannel) (runtime.SessionRunner, error) {
-			return a.newEngine(events, continuedTask, 0, "")
-		},
-		PersistFinal: func(ctx context.Context, result runtime.SessionActorResult) error {
-			if result.Err != nil && result.Session.Status == "" {
-				failed := domain.Session{
-					ID: result.SessionID, TaskID: result.SessionID,
-					Status: domain.SessionStatusFatalError, CreatedAt: inspected.Session.CreatedAt, UpdatedAt: a.now().UTC(),
-				}
-				_ = a.SessionStore.SaveSession(ctx, failed)
-			}
-			return nil
-		},
-	}); err != nil {
-		return a.mapStartError(err)
+func (a *API) HandleChatReply(w http.ResponseWriter, r *http.Request) error {
+	conversationID := strings.TrimSpace(chi.URLParam(r, "conversation_id"))
+	if conversationID == "" {
+		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "conversation id is required"}
 	}
+	var req chatReplyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		return err
+	}
+	result, err := a.chatService().SubmitReply(r.Context(), conversationID, req.Message)
+	if err != nil {
+		return a.mapServiceError(err, "reply to chat")
+	}
+	writeJSON(w, http.StatusAccepted, chatReplyResponse{
+		ConversationID: result.ConversationID,
+		TurnIndex:      result.TurnIndex,
+		StreamURL:      result.StreamURL,
+	})
+	return nil
+}
 
-	writeJSON(w, http.StatusAccepted, sessionAcceptedResponse{SessionID: sessionID, Status: "running", StreamURL: streamURL(sessionID)})
+func (a *API) HandleChatTranscript(w http.ResponseWriter, r *http.Request) error {
+	conversationID := strings.TrimSpace(chi.URLParam(r, "conversation_id"))
+	if conversationID == "" {
+		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "conversation id is required"}
+	}
+	transcript, err := a.chatService().GetTranscript(r.Context(), conversationID)
+	if err != nil {
+		return a.mapServiceError(err, "load transcript")
+	}
+	writeJSON(w, http.StatusOK, chatTranscriptResponse{
+		ConversationID: transcript.Chat.ConversationID,
+		Status:         string(transcript.Chat.Status),
+		Messages:       toTranscriptMessages(transcript.Chat.Messages),
+	})
+	return nil
+}
+
+func (a *API) HandleChatList(w http.ResponseWriter, r *http.Request) error {
+	page, err := parsePositiveIntQuery(r, "page", 1)
+	if err != nil {
+		return err
+	}
+	pageSize, err := parsePositiveIntQuery(r, "page_size", 20)
+	if err != nil {
+		return err
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	status, err := parseListStatusFilter(r.URL.Query().Get("status"))
+	if err != nil {
+		return err
+	}
+	result, err := a.chatService().ListChats(r.Context(), service.ChatListParams{Page: page, PageSize: pageSize, Status: status})
+	if err != nil {
+		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: "list conversations", err: err}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"conversations": toConversationListItems(result.Conversations),
+		"page":          result.Page,
+		"page_size":     result.PageSize,
+		"total":         result.Total,
+	})
 	return nil
 }
 
@@ -299,22 +339,22 @@ func (a *API) HandleInspect(w http.ResponseWriter, r *http.Request) error {
 	if sessionID == "" {
 		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "session id is required"}
 	}
-	inspected, err := a.SessionStore.InspectSession(r.Context(), sessionID)
+	transcript, err := a.chatService().GetTranscript(r.Context(), sessionID)
 	if err != nil {
-		return a.mapStoreError(err, sessionID)
+		return a.mapServiceError(err, "load session state")
 	}
 
 	writeJSON(w, http.StatusOK, inspectResponse{
-		SessionID:   inspected.Session.ID,
-		Status:      apiSessionStatus(inspected.Session.Status),
-		Task:        inspected.Task.Description,
-		TaskType:    string(inspected.Task.CategoryOrDefault()),
-		CreatedAt:   inspected.Session.CreatedAt.UTC(),
-		UpdatedAt:   inspected.Session.UpdatedAt.UTC(),
-		Steps:       toInspectSteps(inspected.Steps),
-		Provenance:  toInspectProvenance(inspected.Session.Provenance),
-		Plan:        inspected.Plan.Summary,
-		Termination: deriveTerminationReason(inspected.Session, inspected.Steps),
+		SessionID:   transcript.Inspect.Session.ID,
+		Status:      apiSessionStatus(transcript.Inspect.Session.Status),
+		Task:        transcript.Inspect.Task.Description,
+		TaskType:    string(transcript.Inspect.Task.CategoryOrDefault()),
+		CreatedAt:   transcript.Inspect.Session.CreatedAt.UTC(),
+		UpdatedAt:   transcript.Inspect.Session.UpdatedAt.UTC(),
+		Steps:       toInspectSteps(transcript.Inspect.Steps),
+		Provenance:  toInspectProvenance(transcript.Inspect.Session.Provenance),
+		Plan:        transcript.Inspect.Plan.Summary,
+		Termination: deriveTerminationReason(transcript.Inspect.Session, transcript.Inspect.Steps),
 	})
 	return nil
 }
@@ -336,13 +376,13 @@ func (a *API) HandleListSessions(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	result, err := a.SessionStore.ListSessions(r.Context(), store.ListSessionsParams{Page: page, PageSize: pageSize, Status: status})
+	result, err := a.chatService().ListConversations(r.Context(), service.ListConversationsParams{Page: page, PageSize: pageSize, Status: status})
 	if err != nil {
 		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: "list sessions", err: err}
 	}
 
 	writeJSON(w, http.StatusOK, listSessionsResponse{
-		Sessions: toListSessionItems(result.Sessions),
+		Sessions: toConversationListItems(result.Conversations),
 		Page:     result.Page,
 		PageSize: result.PageSize,
 		Total:    result.Total,
@@ -352,19 +392,12 @@ func (a *API) HandleListSessions(w http.ResponseWriter, r *http.Request) error {
 
 func (a *API) HandleStream(w http.ResponseWriter, r *http.Request) error {
 	sessionID := strings.TrimSpace(chi.URLParam(r, "id"))
-	if sessionID == "" {
-		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "session id is required"}
+	actor, err := a.chatService().ValidateStreamSession(r.Context(), sessionID)
+	if err != nil {
+		return a.mapServiceError(err, "load session state")
 	}
-	actor, ok := a.Manager.Lookup(sessionID)
-	if !ok {
-		inspected, err := a.SessionStore.InspectSession(r.Context(), sessionID)
-		if err != nil {
-			return a.mapStoreError(err, sessionID)
-		}
-		if isTerminalStatus(inspected.Session.Status) {
-			return nil
-		}
-		return &apiError{status: http.StatusConflict, code: "conflict", message: "session stream is not active"}
+	if actor == nil {
+		return nil
 	}
 
 	flusher, ok := w.(http.Flusher)
@@ -455,6 +488,28 @@ func (a *API) mapStartError(err error) error {
 	}
 }
 
+func (a *API) mapServiceError(err error, defaultMessage string) error {
+	if validationErr, ok := errors.AsType[*service.ValidationError](err); ok {
+		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: validationErr.Error(), err: err}
+	}
+	if conflictErr, ok := errors.AsType[*service.ConflictError](err); ok {
+		code := "conflict"
+		if strings.Contains(conflictErr.Error(), "session cannot be resumed:") {
+			code = "provenance_mismatch"
+		}
+		return &apiError{status: http.StatusConflict, code: code, message: conflictErr.Error(), err: err}
+	}
+	if _, ok := errors.AsType[*service.NotFoundError](err); ok {
+		return &apiError{status: http.StatusNotFound, code: "not_found", message: "session not found", err: err}
+	}
+	switch {
+	case errors.Is(err, runtime.ErrSessionAlreadyActive), errors.Is(err, runtime.ErrActiveSessionLimit), errors.Is(err, runtime.ErrSessionManagerClosed):
+		return a.mapStartError(err)
+	default:
+		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: defaultMessage, err: err}
+	}
+}
+
 func (a *API) mapStoreError(err error, sessionID string) error {
 	if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "not found") {
 		return &apiError{status: http.StatusNotFound, code: "not_found", message: fmt.Sprintf("session %q not found", sessionID), err: err}
@@ -490,8 +545,7 @@ func decodeJSON(r *http.Request, target any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return &apiError{status: http.StatusRequestEntityTooLarge, code: "request_too_large", message: fmt.Sprintf("request body must be less than %d bytes", maxRequestBodySize)}
 		}
 		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "invalid JSON body", err: err}
@@ -722,6 +776,40 @@ func toListSessionItems(summaries []store.SessionSummary) []listSessionItem {
 	return items
 }
 
+func toConversationListItems(summaries []service.ConversationSummary) []listSessionItem {
+	if len(summaries) == 0 {
+		return []listSessionItem{}
+	}
+	items := make([]listSessionItem, 0, len(summaries))
+	for _, summary := range summaries {
+		items = append(items, listSessionItem{
+			SessionID: summary.SessionID,
+			Status:    summary.Status,
+			Task:      summary.Task,
+			TaskType:  summary.TaskType,
+			CreatedAt: summary.CreatedAt.UTC(),
+			UpdatedAt: summary.UpdatedAt.UTC(),
+		})
+	}
+	return items
+}
+
+func toTranscriptMessages(messages []domain.ChatMessage) []transcriptMessage {
+	if len(messages) == 0 {
+		return []transcriptMessage{}
+	}
+	items := make([]transcriptMessage, 0, len(messages))
+	for _, message := range messages {
+		items = append(items, transcriptMessage{
+			TurnIndex: message.TurnIndex,
+			Role:      string(message.Role),
+			Content:   message.Content,
+			Timestamp: message.Timestamp.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return items
+}
+
 func listStatusFilterMap() map[string][]string {
 	return map[string][]string{
 		"created":   {string(domain.SessionStatusPending)},
@@ -768,15 +856,16 @@ func toInspectProvenance(p *domain.Provenance) *provenance {
 		return nil
 	}
 	out := &provenance{}
-	for _, plugin := range p.Normalize().Plugins {
-		plugin := plugin
+	plugins := p.Normalize().Plugins
+	for i := range plugins {
+		plugin := &plugins[i]
 		switch plugin.Family {
 		case domain.PluginFamilyProvider:
-			out.ProviderPlugin = &plugin
+			out.ProviderPlugin = plugin
 		case domain.PluginFamilyVerifier:
-			out.VerifierPlugin = &plugin
+			out.VerifierPlugin = plugin
 		case domain.PluginFamilyAgentStrategy:
-			out.AgentStrategyPlugin = &plugin
+			out.AgentStrategyPlugin = plugin
 		}
 	}
 	if out.ProviderPlugin == nil && out.VerifierPlugin == nil && out.AgentStrategyPlugin == nil {
@@ -802,7 +891,6 @@ func (a *API) validateProvenanceForResume(p *domain.Provenance) []string {
 			if pluginID == "" {
 				continue
 			}
-			// Check if provider plugin is still configured
 			if apiCfg.PluginProvider != "" && apiCfg.PluginProvider != pluginID {
 				errs = append(errs, fmt.Sprintf("provider plugin %q was used but current configuration uses %q", pluginID, apiCfg.PluginProvider))
 			}
@@ -832,4 +920,26 @@ func (a *API) now() time.Time {
 		return a.Clock()
 	}
 	return time.Now()
+}
+
+func (a *API) chatService() *service.ChatService {
+	if a.Service != nil {
+		return a.Service
+	}
+	var engineFactory service.EngineFactory
+	if a.EngineFactory != nil {
+		engineFactory = func(events *runtime.EventChannel, task domain.Task, maxSteps int, verifyMode string) (runtime.SessionRunner, error) {
+			return a.EngineFactory(events, task, maxSteps, verifyMode)
+		}
+	}
+	a.Service = service.NewChatService(service.Dependencies{
+		SessionStore:   a.SessionStore,
+		MemoryStore:    a.MemoryStore,
+		SessionManager: a.Manager,
+		Builder:        a.Builder,
+		Config:         a.Config,
+		EngineFactory:  engineFactory,
+		Clock:          a.Clock,
+	})
+	return a.Service
 }

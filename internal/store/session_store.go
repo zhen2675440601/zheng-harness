@@ -38,12 +38,15 @@ type ListSessionsResult struct {
 }
 
 type SessionSummary struct {
-	SessionID string
-	Status    string
-	Task      string
-	TaskType  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	SessionID       string
+	ConversationID  string
+	ParentSessionID string
+	TurnIndex       int
+	Status          string
+	Task            string
+	TaskType        string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type SessionLifecyclePhase string
@@ -72,8 +75,24 @@ type storedTask struct {
 }
 
 type storedSessionMetadata struct {
-	Task       *storedTask        `json:"task,omitempty"`
-	Provenance *domain.Provenance `json:"provenance,omitempty"`
+	Task         *storedTask              `json:"task,omitempty"`
+	Provenance   *domain.Provenance       `json:"provenance,omitempty"`
+	Conversation *storedConversationState `json:"conversation,omitempty"`
+}
+
+type storedConversationState struct {
+	ID              string `json:"id,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	TurnIndex       int    `json:"turn_index,omitempty"`
+}
+
+type ConversationSessionRecord struct {
+	Session         domain.Session
+	Task            domain.Task
+	Lifecycle       PersistedSessionLifecycle
+	ConversationID  string
+	ParentSessionID string
+	TurnIndex       int
 }
 
 type storedPlan struct {
@@ -398,6 +417,14 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context, params ListSessio
 			summary.Task = strings.TrimSpace(metadata.Task.Description)
 			summary.TaskType = string(metadata.Task.Category.Normalize())
 		}
+		if metadata.Conversation != nil {
+			summary.ConversationID = strings.TrimSpace(metadata.Conversation.ID)
+			summary.ParentSessionID = strings.TrimSpace(metadata.Conversation.ParentSessionID)
+			summary.TurnIndex = metadata.Conversation.TurnIndex
+		}
+		if summary.ConversationID == "" {
+			summary.ConversationID = summary.SessionID
+		}
 		if summary.TaskType == "" {
 			summary.TaskType = string(domain.TaskCategoryGeneral)
 		}
@@ -408,6 +435,114 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context, params ListSessio
 	}
 
 	return &ListSessionsResult{Sessions: summaries, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+func (s *SQLiteSessionStore) SaveConversationState(ctx context.Context, sessionID string, conversationID string, parentSessionID string, turnIndex int) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite session store is not initialized")
+	}
+	metadata, err := s.loadSessionMetadata(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("load existing session metadata for session %q: %w", sessionID, err)
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		conversationID = sessionID
+	}
+	metadata.Conversation = &storedConversationState{
+		ID:              conversationID,
+		ParentSessionID: strings.TrimSpace(parentSessionID),
+		TurnIndex:       turnIndex,
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("marshal conversation metadata for session %q: %w", sessionID, err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET config_json = ?, updated_at = CASE WHEN updated_at > created_at THEN updated_at ELSE created_at END
+		WHERE id = ?
+	`, string(metadataJSON), sessionID)
+	if err != nil {
+		return fmt.Errorf("save conversation metadata for session %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+func (s *SQLiteSessionStore) ListConversationSessions(ctx context.Context, conversationID string) ([]ConversationSessionRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite session store is not initialized")
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil, errors.New("conversation id is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, task_id, status, lifecycle_phase, is_active, is_terminal, is_resumable, config_json, created_at, updated_at
+		FROM sessions
+		ORDER BY created_at ASC, id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query conversation sessions: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]ConversationSessionRecord, 0)
+	for rows.Next() {
+		var (
+			session        domain.Session
+			status         string
+			lifecyclePhase sql.NullString
+			activeValue    sql.NullInt64
+			terminalValue  sql.NullInt64
+			resumableValue sql.NullInt64
+			configJSON     sql.NullString
+		)
+		if err := rows.Scan(&session.ID, &session.TaskID, &status, &lifecyclePhase, &activeValue, &terminalValue, &resumableValue, &configJSON, &session.CreatedAt, &session.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan conversation session: %w", err)
+		}
+		session.Status = domain.SessionStatus(status)
+		metadata, err := parseStoredSessionMetadata(configJSON)
+		if err != nil {
+			return nil, fmt.Errorf("parse session %q metadata: %w", session.ID, err)
+		}
+		resolvedConversationID := session.ID
+		parentSessionID := ""
+		turnIndex := 0
+		if metadata.Conversation != nil {
+			if id := strings.TrimSpace(metadata.Conversation.ID); id != "" {
+				resolvedConversationID = id
+			}
+			parentSessionID = strings.TrimSpace(metadata.Conversation.ParentSessionID)
+			turnIndex = metadata.Conversation.TurnIndex
+		}
+		if resolvedConversationID != conversationID {
+			continue
+		}
+		task := domain.Task{ID: session.TaskID, CreatedAt: session.CreatedAt}
+		if metadata.Task != nil {
+			task.Description = metadata.Task.Description
+			task.Goal = metadata.Task.Goal
+			task.Category = metadata.Task.Category
+			task.ProtocolHint = metadata.Task.ProtocolHint
+			task.VerificationPolicy = metadata.Task.VerificationPolicy
+		}
+		records = append(records, ConversationSessionRecord{
+			Session:         session,
+			Task:            task.Normalize(),
+			Lifecycle:       persistedLifecycleFromRow(session.Status, lifecyclePhase, activeValue, terminalValue, resumableValue),
+			ConversationID:  resolvedConversationID,
+			ParentSessionID: parentSessionID,
+			TurnIndex:       turnIndex,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate conversation sessions: %w", err)
+	}
+	if len(records) == 0 {
+		return nil, fmt.Errorf("conversation %q not found: %w", conversationID, sql.ErrNoRows)
+	}
+	return records, nil
 }
 
 func listSessionStatusesForFilter(status string) ([]domain.SessionStatus, error) {
