@@ -7,14 +7,15 @@
 **v3** 新增 **三家族插件系统 (provider/verifier/agent-strategy)、fail-closed 运行时、来源可追溯**。
 **v4** 新增 **HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider**。
 **v5** 新增 **同源内嵌 Web UI、Session 列表 API、浏览器 JWT Bootstrap、Dashboard 与 Live SSE 观看**。
+**v6** 新增 **Chat-First 对话式 Web UI、六层 Harness 架构对齐、聊天 API 端点**。
 
 **定位**: 通用任务执行引擎，支持 coding、research、file workflow 等多种任务类型。
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成 | v6 ✅ 完成**
 
-核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证；**v3 三家族插件系统、fail-closed 语义、fail-closed 运行时已验证**；**v4 HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider 已验证**；**v5 Web UI 同源内嵌、Session 列表 API、浏览器 JWT Bootstrap、Dashboard/Live SSE/Inspect 视图、E2E 浏览器自动化测试已验证**。详细进度请见 [PROGRESS.md](PROGRESS.md)。
+核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证；**v3 三家族插件系统、fail-closed 语义、fail-closed 运行时已验证**；**v4 HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider 已验证**；**v5 Web UI 同源内嵌、Session 列表 API、浏览器 JWT Bootstrap、Dashboard/Live SSE/Inspect 视图、E2E 浏览器自动化测试已验证**；**v6 聊天优先 Web UI、六层架构对齐、聊天 API 端点已验证**。详细进度请见 [PROGRESS.md](PROGRESS.md)。
 
 验证状态见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
@@ -187,6 +188,48 @@ v5 在 Go 二进制中内嵌了完整的 Web UI，通过 `//go:embed` 编译期�
 - **NO 事件回放**: SSE 重连仅接收未来事件
 - **NO 登录/账户系统**: JWT 认证采用手动 token 粘贴方式，无用户注册/登录
 
+## v6 新增特性 (Chat-First UI + Six-Layer Alignment)
+
+### 1. 聊天优先 Web UI
+
+v6 将 v5 的任务提交式 Dashboard 改造为 **对话式聊天工作区** 作为 Web 主入口：
+
+- **Chat 工作区主入口**: 浏览器打开后默认进入聊天界面，发起对话式请求，而不是 "New Task" 表单
+- **流式对话回复**: 聊天消息实时流式渲染 SSE token_delta，工具调用以可折叠行内卡片展示
+- **会话侧栏**: 左侧历史会话列表，支持切换/继续/resume 已有会话
+- **结构化 Inspect**: 聊天内可查看步骤详情、计划摘要、provenance，无需离开聊天界面
+- **同源内嵌**: 沿用 `//go:embed` 编译期嵌入，零外部前端依赖
+
+### 2. 六层 Harness 架构对齐
+
+v6 将服务端边界收敛为 Harness Engineering 六层基线，职责清晰、依赖单向：
+
+| Layer | 职责 | 对应包 |
+|-------|------|--------|
+| **Types** | 领域契约、事件定义、接口声明 | `internal/domain` |
+| **Config** | 配置加载、验证、多 provider 解析 | `internal/config` |
+| **Repo** | 持久化适配（SQLite）、会话/计划/步骤 CRUD | `internal/persistence` |
+| **Service** | 聊天用例（conversation/session/message/stream） | `internal/service` |
+| **Runtime** | 引擎编排、工具执行、plan-execute-verify 循环 | `internal/runtime` |
+| **UI** | HTTP transport、SSE streaming、内嵌 Web 资源 | `internal/server`, `cmd/server` |
+
+**依赖方向**: UI → Service → Runtime → Repo → Types，Config 被各层依赖。UI/transport 不直接承载业务编排决策；核心聊天用例可脱离 HTTP handler 被调用。
+
+### 3. 聊天 API 端点
+
+v6 新增 chat-first API 端点，与现有 REST API 共存：
+
+- `POST /api/v1/chat`: 创建新会话并发送首条消息，返回 session_id
+- `POST /api/v1/chat/{session_id}`: 向已有会话追加消息，触发 agent 响应
+- `GET /api/v1/chat/{session_id}/stream`: SSE 流式监听聊天响应事件
+- `GET /api/v1/conversations`: 分页列出所有对话历史щих
+
+### v6 非目标
+
+- **NO 独立 SPA 构建系统**: 保持同源内嵌，默认不引入 React/Vue 构建流程
+- **NO 扩展产品功能**: v6 仅改造 UX 和架构边界，不新增 tool/provider/verifier 能力ч
+- **NO 破坏 v5 API**: 现有 `POST /api/v1/run`、`GET /api/v1/sessions` 等端点保持可用
+
 ## 快速开始
 
 ### 1. 克隆并进入仓库
@@ -254,19 +297,20 @@ curl -sS -H "Authorization: Bearer YOUR_TOKEN" \
 
 API 服务器需要 JWT 认证配置。详见 [`docs/USAGE.md`](docs/USAGE.md) API 服务器章节。
 
-### 4c. 启动 Web UI (v5+)
+### 4c. 启动 Web UI (v5+, v6 chat-first)
 
 ```bash
-# 启动 API 服务器并启用 Web UI
+# 启动 API 服务器并启用 Web UI (v6 默认聊天工作区)
 go run ./cmd/server --config ./zheng.json --addr :8080 --web-ui-enabled
 
 # 浏览器访问
 open http://127.0.0.1:8080
 
-# 粘贴 JWT token 到页面右上角输入框，点击 Connect 连接即可使用
+# v6: 粘贴 JWT token 完成认证后，直接进入聊天工作区进行对话式交互
+# v5: 粘贴 JWT token 到页面右上角输入框，点击 Connect 连接即可使用
 ```
 
-Web UI 在浏览器中提供 Dashboard、Live SSE 流、任务提交、会话检查和历史浏览功能。详细使用说明见 [`docs/USAGE.md`](docs/USAGE.md) v5 Web UI 章节。
+v6 Web UI 提供**聊天工作区**作为主入口，支持对话式交互、流式回复、会话切换/继续、结构化 inspect 和历史浏览。v5 Dashboard 和任务提交功能作为辅助视图保留。详细使用说明见 [`docs/USAGE.md`](docs/USAGE.md) v6 Chat UI 章节。
 
 ### 5. 查看详细使用说明
 
