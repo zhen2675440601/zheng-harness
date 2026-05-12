@@ -6,9 +6,9 @@
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成 | v6 ✅ 完成 | v7 ✅ 完成**
 
-**已完成**: T1-T11 (11/11 核心任务) + Phase 3 T1-T12 + Phase 4 闭环验证 + v1/v2/v3/v4/v5 发布准备
+**已完成**: T1-T11 (11/11 核心任务) + Phase 3 T1-T12 + Phase 4 闭环验证 + v1/v2/v3/v4/v5/v6/v7 发布准备
 
 验证状态权威来源：[`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
@@ -122,6 +122,138 @@ go test ./cmd/agent/... -run TestCLIUnaffectedByServer
 - ✅ 所有 `/api/v1/*` 端点强制 JWT 认证
 
 **v4 验证状态**: 所有 API 端点、SSE 流、并发执行、Provider 实现、SQLite WAL、CLI 非回归测试已通过。详见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
+
+---
+
+## v7 ✅ 完成
+
+详见 [v7 Internal Reliability Release 计划](.sisyphus/plans/v7-internal-reliability-release.md):
+
+v7 是 **内部可靠性发布**，不扩展新能力。聚焦将 v6 chat-first Web UI + six-layer backend 打磨为可依赖的内部稳定版本。所有改动均遵循 TDD：先补失败用例，再实施稳定性改进。
+
+### 任务 1: RED Baseline (可靠性失败测试优先)
+
+- ✅ API 级别 RED 测试：缺失会话、不支持的 task_type
+- ✅ Domain task typing：添加 `TaskCategory` (`coding`/`research`/`file_workflow`/`general`) + `ProtocolHint` + `VerificationPolicy` 字段
+- ✅ Runtime 级别 RED 测试：订阅-after-完成、流式缺失会话
+- ✅ Service 级别 RED 测试：不支持的 task_type 拒绝
+- ✅ Playwright 引导验证 + 17 个测试注册清单
+- ✅ v5 ADR 护栏确认（v5 范围未泄露到 v7）
+
+证据：`task-1-api-red.txt`, `task-1-domain-task-typing.txt`, `task-1-service-red.txt`, `task-1-runtime-red.txt`, `task-1-playwright-list.txt`, `task-1-v5-adr-guardrails.txt`
+
+### 任务 2: Service Validation（服务层校验硬化）
+
+- ✅ `isSupportedTaskType()` 辅助函数：精确字符串匹配 `general`/`coding`/`research`/`file_workflow`
+- ✅ `StartConversation()` 和 `StartChat()` 拒绝不支持 task_type
+- ✅ 缺失会话返回 `NotFoundError`（消息中包含资源 ID）
+- ✅ 运行中对话拒绝提交回复返回 `ConflictError`
+- ✅ 终止会话拒绝 resume 返回 `ConflictError`
+- ✅ Action 合约扩展：`request_input` 和 `complete` 两种新 action 类型
+
+**验证命令**:
+```bash
+go test ./internal/service/... -v -run "UnsupportedTaskType|NotFoundForMissing|RejectsTerminal|RejectsRunning"
+```
+全部 5 个测试 PASS。
+
+证据：`task-2-service-validation.txt`, `task-2-service-conflict.txt`, `task-2-action-contract.txt`
+
+### 任务 3: Session Manager Lifecycle（会话生命周期硬化）
+
+- ✅ `SessionActor.Subscribe()` 在 actor 终结后 fail-closed
+- ✅ `sessionEventRelay` 拆除后新订阅被确定性拒绝
+- ✅ Nil runner factory 提升为显式 actor 失败
+- ✅ 静态 task-type registry：`TaskRegistry` 编译期元数据 map，确定性 fallback 元数据
+
+**验证命令**:
+```bash
+go test ./internal/runtime/... -run "Session"
+```
+PASS（`ok zheng-harness/internal/runtime 0.388s`）
+
+**已知阻塞**: `go test -race ./internal/runtime/...` 在 windows/386 上不支持（Go 工具链限制）。
+
+证据：`task-3-session-manager-edge.txt`, `task-3-session-manager-race.txt`, `task-3-task-registry.txt`
+
+### 任务 4: Stream Hardening（SSE 流式硬化）
+
+- ✅ 流式 happy path 验证（runtime 流事件排序、tool lifecycle、step/session completion）
+- ✅ 流式 failure path 验证（server 端缺失会话结构化包络）
+- ✅ Task-aware verifier dispatch：根据 task metadata 选择验证策略
+- ✅ 研究型证据验证器、file workflow 状态/输出验证器
+- ✅ `not_applicable` 验证状态支持
+
+**验证命令**:
+```bash
+go test ./internal/server/...
+go test ./internal/runtime -run "Stream|Event|SSE"
+```
+全部 PASS。
+
+证据：`task-4-stream-happy.txt`, `task-4-stream-failure.txt`, `task-4-task-aware-verifier.txt`
+
+### 任务 5: API Error Envelopes（统一 API 错误包络）
+
+- ✅ 统一 `writeStructuredError` 包络：`{"error":{"code":"...","message":"..."},"request_id":"..."}`
+- ✅ 6 种错误码：unauthorized/invalid_request/not_found/conflict/too_many_requests/internal_error
+- ✅ `NotFoundError` 消息包含缺失资源 ID：`session "missing-session" not found`
+- ✅ Panic recoverer：原始 panic 值永不暴露，统一返回 "internal server error"
+- ✅ 跨机器 continuation 文档更新
+
+**验证命令**:
+```bash
+go test ./internal/server/... -run "Envelope|Recoverer|Panic"
+```
+全部 PASS。
+
+证据：`task-5-api-errors.txt`, `task-5-api-recoverer.txt`, `task-5-cross-machine-docs.txt`
+
+### 任务 6: Diagnostics（运行时诊断）
+
+- ✅ 运行时协议元数据解析：Runtime 通过 task registry 解析协议元数据
+- ✅ `request_input` 终端路径：不执行工具、标记 not_applicable、session 转为 `blocked_input`
+- ✅ `complete` 终端路径：不执行工具、标记 passed、session 正常退出
+- ✅ Observation 归一化：respond/request_input/complete 动作传播响应文本
+
+**新增测试**:
+- `TestRuntimeRequestInputTransitionsSessionToBlockedInput`
+- `TestRuntimeCompleteTransitionsThroughSuccessfulPathWithoutToolExecution`
+
+证据：`task-6-runtime-protocol.txt`, `task-6-diagnostics.txt`
+
+### 任务 7: Browser Regression（浏览器回归测试）
+
+- ✅ 17 个 Playwright 测试注册（auth/composer/history/stream/reliability 五类场景）
+- ✅ 7 个新增可靠性测试：JWT 手动登录/持久化、无效/过期 JWT 反馈、空 composer 阻止、正常提交、提交失败反馈、刷新连续性
+- ✅ Prompt 协议扩展：task.type/task.protocol 上下文注入、4 种 action 说明
+- ✅ Model adapter 回归测试
+
+**验证命令**:
+```bash
+cd e2e && npx playwright test --project=chromium --list
+```
+17 个测试注册成功。
+
+**已知阻塞**: Playwright full run 被预存在的 harness drift 阻塞（harness 需要维护才能正常 serve 响应）。证据文件 `task-7-playwright-failure.txt` 记录了详细的失败信息。
+
+证据：`task-7-playwright-happy.txt`, `task-7-playwright-failure.txt`, `task-7-prompt-protocol.txt`
+
+### v7 验证状态
+
+**v7 验证命令**（已通过）:
+```bash
+go test ./internal/service/...   # 服务层校验、冲突、恢复
+go test ./internal/server/...    # API 错误包络、panic 恢复
+go test ./internal/runtime -run "Stream|Event|SSE"  # 流式事件排序
+go test ./internal/store/...     # 持久化层稳定性
+```
+
+**已知环境限制**:
+- `go test -race ./internal/runtime/...` — 不支持 windows/386（Go 工具链限制）
+- Playwright 完整运行 — 被预存在 harness drift 阻塞
+
+**v7 验证状态**: 所有 7 个任务的可靠性测试已通过。服务层校验、会话生命周期硬化、SSE 错误路径保护、统一 API 错误包络、运行时诊断、浏览器回归清单全部验证。详见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
 ---
 

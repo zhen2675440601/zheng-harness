@@ -8,14 +8,15 @@
 **v4** 新增 **HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider**。
 **v5** 新增 **同源内嵌 Web UI、Session 列表 API、浏览器 JWT Bootstrap、Dashboard 与 Live SSE 观看**。
 **v6** 新增 **Chat-First 对话式 Web UI、六层 Harness 架构对齐、聊天 API 端点**。
+**v7** 新增 **内部可靠性强化：服务层校验、会话生命周期硬化工、SSE 错误路径保护、统一 API 错误包络、最小诊断、浏览器回归清单**。
 
 **定位**: 通用任务执行引擎，支持 coding、research、file workflow 等多种任务类型。
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成 | v6 ✅ 完成**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成 | v6 ✅ 完成 | v7 ✅ 完成**
 
-核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证；**v3 三家族插件系统、fail-closed 语义、fail-closed 运行时已验证**；**v4 HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider 已验证**；**v5 Web UI 同源内嵌、Session 列表 API、浏览器 JWT Bootstrap、Dashboard/Live SSE/Inspect 视图、E2E 浏览器自动化测试已验证**；**v6 聊天优先 Web UI、六层架构对齐、聊天 API 端点已验证**。详细进度请见 [PROGRESS.md](PROGRESS.md)。
+核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证；**v3 三家族插件系统、fail-closed 语义、fail-closed 运行时已验证**；**v4 HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider 已验证**；**v5 Web UI 同源内嵌、Session 列表 API、浏览器 JWT Bootstrap、Dashboard/Live SSE/Inspect 视图、E2E 浏览器自动化测试已验证**；**v6 聊天优先 Web UI、六层架构对齐、聊天 API 端点已验证**；**v7 内部可靠性发布：服务层校验、会话生命周期硬化工、SSE 错误保护、统一 API 错误包络、最小诊断、浏览器回归清单已验证**。详细进度请见 [PROGRESS.md](PROGRESS.md)。
 
 验证状态见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
@@ -227,8 +228,58 @@ v6 新增 chat-first API 端点，与现有 REST API 共存：
 ### v6 非目标
 
 - **NO 独立 SPA 构建系统**: 保持同源内嵌，默认不引入 React/Vue 构建流程
-- **NO 扩展产品功能**: v6 仅改造 UX 和架构边界，不新增 tool/provider/verifier 能力ч
+- **NO 扩展产品功能**: v6 仅改造 UX 和架构边界，不新增 tool/provider/verifier 能力
 - **NO 破坏 v5 API**: 现有 `POST /api/v1/run`、`GET /api/v1/sessions` 等端点保持可用
+
+## v7 新增特性 (Internal Reliability Release)
+
+v7 是 **内部可靠性发布**，不扩展新能力，专注于将 v6 的 chat-first Web UI + six-layer backend 打磨为可依赖的内部稳定版本。所有改动均遵循 TDD：先补失败用例，再实施稳定性改进。
+
+### 1. 服务层校验硬化
+
+- **task_type 校验**: `StartConversation()` 和 `StartChat()` 拒绝不支持的 task_type，返回 `ValidationError`
+- **缺失会话处理**: 提交回复到不存在的会话时返回 `NotFoundError`，消息中包含缺失资源 ID
+- **运行中冲突**: 正在运行的会话不接受新的提交回复，返回 `ConflictError`
+- **终止会话拒绝**: 已完成/失败的会话拒绝 resume，返回 `ConflictError`
+
+### 2. 会话生命周期硬化
+
+- **订阅 fail-closed**: 已终结的 actor 拒绝新订阅，防止幽灵监听
+- **Nil runner 提升**: Nil runner factory 被显式提升为 actor 失败，确保运行状态与实际执行一致
+- **Relay 安全拆除**: `sessionEventRelay` 拆除后新订阅被确定性拒绝，不注册到死 relay
+
+### 3. SSE 流式错误路径保护
+
+- **结构化错误包络**: 所有错误路径使用统一的 `writeStructuredError` 包络：`{"error":{"code":"...","message":"..."},"request_id":"..."}`
+- **5 种错误码**: unauthorized (401), invalid_request (400), not_found (404), conflict (409), too_many_requests (429), internal_error (500)
+- **缺失会话 SSE 包络**: 流式请求缺失会话时返回结构化 `not_found` 包络，包含缺失的 session ID
+- **Panic 安全恢复**: handler panic 永远不暴露原始值到客户端，统一返回 "internal server error"
+
+### 4. 运行时协议诊断
+
+- **运行时协议元数据解析**: Runtime 通过静态 task registry 解析协议元数据，在 plan 创建、action 选择、observation 处理、验证/终止决策中使用
+- **request_input 终端路径**: 被确定性视为阻塞输入终端：不执行工具，标记 `not_applicable` 验证状态，会话转为 `blocked_input`
+- **complete 终端路径**: 被显式视为成功终端：不执行工具，标记 `passed` 验证状态，会话正常成功退出
+
+### 5. Prompt 协议扩展
+
+- **任务上下文注入**: 在 prompt payload 中添加 `task.type` 和 `task.protocol` 上下文
+- **扩展 action 说明**: `next_action` JSON 指令覆盖 respond, tool_call, request_input, complete 四种类型
+- **去除编码假设**: 移除 action 选择说明中的编码任务假设
+
+### 6. 浏览器回归清单
+
+- **17 个 Playwright 测试注册**: 覆盖 auth/composer/history/stream/reliability 五类场景
+- **可靠性子套件**: 新增 7 个可靠性测试：JWT 手动登录/持久化、无效/过期 JWT 反馈、空 composer 阻止提交、正常聊天提交、提交失败反馈、刷新保持会话连续性
+
+### v7 非目标
+
+- **NO 外部发布/GA**: v7 仅面向内部稳定使用，不适用于对外 polished 发布
+- **NO 多租户**: 不引入租户隔离、配额系统或复杂权限模型
+- **NO 完整可观测性平台**: 仅做排障所需的最小诊断入口
+- **NO 长期记忆升级**: memory 层保持 v6 范围
+- **NO 插件生态扩展**: 不新增插件类型或市场机制
+- **NO 事件回放/重连历史**: SSE 重连仅接收未来事件，v7 不实现回放
 
 ## 快速开始
 

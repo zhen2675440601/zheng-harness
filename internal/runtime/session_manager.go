@@ -115,6 +115,7 @@ type sessionEventRelay struct {
 	bufferSize  int
 	subscribers map[*EventSubscription]struct{}
 	mu          sync.Mutex
+	closed      bool
 }
 
 type SessionActorResult struct {
@@ -306,6 +307,11 @@ func (m *SessionManager) runActor(ctx context.Context, actor *SessionActor, req 
 		m.completeActor(req, result)
 		return
 	}
+	if runner == nil {
+		result := actor.finish(m.clock(), domain.Session{}, domain.Plan{}, nil, errors.New("runtime session runner factory returned nil runner"))
+		m.completeActor(req, result)
+		return
+	}
 
 	session, plan, steps, runErr := runner.Run(runCtx, req.Task)
 	result := actor.finish(m.clock(), session, plan, steps, runErr)
@@ -349,6 +355,12 @@ func (a *SessionActor) EventChannel() *EventChannel {
 func (a *SessionActor) Subscribe(buffer int) *EventSubscription {
 	if a == nil || a.relay == nil {
 		return nil
+	}
+	a.mu.RLock()
+	finalized := a.finalized
+	a.mu.RUnlock()
+	if finalized {
+		return newClosedEventSubscription(buffer)
 	}
 	return a.relay.subscribe(buffer)
 }
@@ -502,14 +514,17 @@ func (r *sessionEventRelay) subscribe(buffer int) *EventSubscription {
 	if buffer <= 0 {
 		buffer = r.bufferSize
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return newClosedEventSubscription(buffer)
+	}
 	sub := &EventSubscription{ch: make(chan domain.StreamingEvent, buffer)}
 	sub.onClose = func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		delete(r.subscribers, sub)
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.subscribers[sub] = struct{}{}
 	return sub
 }
@@ -523,13 +538,14 @@ func (r *sessionEventRelay) broadcast(event domain.StreamingEvent) {
 	r.mu.Unlock()
 	for _, sub := range subs {
 		if !sub.trySend(event) {
-			sub.markOverflow(newSubscriberOverflowEvent())
+			sub.markOverflow(overflowSignalForEvent(event))
 		}
 	}
 }
 
 func (r *sessionEventRelay) closeAll() {
 	r.mu.Lock()
+	r.closed = true
 	subs := make([]*EventSubscription, 0, len(r.subscribers))
 	for sub := range r.subscribers {
 		subs = append(subs, sub)
@@ -539,6 +555,15 @@ func (r *sessionEventRelay) closeAll() {
 	for _, sub := range subs {
 		sub.Close()
 	}
+}
+
+func newClosedEventSubscription(buffer int) *EventSubscription {
+	if buffer <= 0 {
+		buffer = defaultSubscriberBuffer
+	}
+	sub := &EventSubscription{ch: make(chan domain.StreamingEvent, buffer)}
+	sub.Close()
+	return sub
 }
 
 func (s *EventSubscription) Events() <-chan domain.StreamingEvent {
@@ -624,4 +649,12 @@ func newSubscriberOverflowEvent() *domain.StreamingEvent {
 		return &domain.StreamingEvent{Type: domain.EventError, Timestamp: time.Now().UTC()}
 	}
 	return event
+}
+
+func overflowSignalForEvent(event domain.StreamingEvent) *domain.StreamingEvent {
+	if event.Type == domain.EventSessionComplete {
+		copyEvent := event
+		return &copyEvent
+	}
+	return newSubscriberOverflowEvent()
 }

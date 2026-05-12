@@ -29,85 +29,41 @@
   </div>
 
   <div id="main-content" class="app-shell" style="display:none">
-    <header class="nav-bar" data-test="nav">
-      <div class="nav-brand">
-        <strong>Zheng Harness</strong>
-        <span>聊天优先 · 嵌入式智能体工作台</span>
+    <aside id="history-panel" class="sidebar-shell workspace-panel history-panel">
+      <div class="sidebar-head">
+        <button id="new-chat-btn" class="sidebar-primary-button" type="button">＋ 新对话</button>
       </div>
-      <div class="top-utility-strip">
-        <button id="history-toggle" class="ghost-button" type="button">历史会话</button>
-        <div class="connection-state">
-          <span id="connection-indicator" class="status-dot green"></span>
-          <span id="connection-label">已连接</span>
-        </div>
-        <button id="disconnect-btn" class="secondary-button" type="button">断开</button>
-      </div>
-    </header>
 
-    <section class="hero card hero-chat">
-      <div>
-        <span class="eyebrow">Chat-first workflow</span>
-        <h2>在单一聊天界面里驱动、观察并恢复智能体执行</h2>
-        <p>消息先行，流式输出内联展示；历史、检查面板和恢复操作都围绕当前对话展开。</p>
-      </div>
-      <div class="hero-meta">
-        <span>内联流式响应</span>
-        <span>历史会话侧栏</span>
-        <span>Inspect 抽屉</span>
-      </div>
-    </section>
+      <div id="history-error" class="inline-banner inline-banner-danger" style="display:none"></div>
+      <div id="conversation-list" data-test="conversation-list" class="history-list"></div>
+    </aside>
 
-    <div class="workspace-grid">
-      <aside id="history-panel" class="card workspace-panel history-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="eyebrow">History</span>
-            <h3>会话列表</h3>
-          </div>
-          <button id="history-close" class="ghost-button history-close" type="button">关闭</button>
-        </div>
-
-        <div class="history-toolbar">
-          <label class="sr-only" for="history-status-filter">按状态筛选</label>
-          <select id="history-status-filter" aria-label="按状态筛选">
-            <option value="">全部状态</option>
-            <option value="running">运行中</option>
-            <option value="created">已创建</option>
-            <option value="completed">已完成</option>
-            <option value="failed">失败</option>
-            <option value="cancelled">已取消</option>
-          </select>
-          <button id="history-refresh" class="secondary-button" type="button">刷新</button>
-        </div>
-
-        <div id="history-error" class="inline-banner inline-banner-danger" style="display:none"></div>
-        <div id="conversation-list" data-test="conversation-list" class="history-list"></div>
-      </aside>
-
-      <main id="page-chat" data-test="page-chat" class="workspace-main card">
-        <div class="chat-header">
-          <div>
-            <span class="eyebrow">Active Conversation</span>
-            <h3 id="conversation-title">新对话</h3>
+    <main id="page-chat" data-test="page-chat" class="chat-shell">
+      <header class="chat-topbar" data-test="nav">
+        <div class="chat-topbar-left">
+          <button id="history-toggle" class="ghost-button icon-button" type="button" aria-label="切换侧栏">☰</button>
+          <div class="chat-title-block">
+            <h2 id="conversation-title">新对话</h2>
             <p id="conversation-subtitle" class="page-subtitle">发送第一条消息以创建会话。</p>
           </div>
-          <div class="chat-meta-rail">
-            <div class="meta-pill">
-              <span class="meta-label">会话</span>
-              <code id="conversation-id">未创建</code>
-            </div>
-            <div class="meta-pill">
-              <span class="meta-label">状态</span>
-              <span id="conversation-status" class="status-badge status-created">ready</span>
-            </div>
-            <div class="meta-pill meta-pill-stack">
-              <span class="meta-label">连接</span>
-              <span id="stream-status-text">空闲</span>
-            </div>
-            <div class="chat-actions">
-              <button id="inspect-toggle" class="secondary-button" type="button">查看 Inspect</button>
-              <button id="resume-btn" class="secondary-button" type="button" style="display:none">继续执行</button>
-            </div>
+        </div>
+        <div class="chat-topbar-actions">
+          <button id="inspect-toggle" class="ghost-button" type="button">设置 / Inspect</button>
+        </div>
+      </header>
+
+      <section class="chat-stage card">
+        <div class="chat-status-row">
+          <div class="status-summary">
+            <span id="connection-indicator" class="status-dot green"></span>
+            <span id="connection-label">已连接</span>
+            <span class="status-separator">·</span>
+            <span id="stream-status-text">空闲</span>
+          </div>
+          <div class="chat-inline-actions">
+            <span id="conversation-status" class="status-badge status-created">ready</span>
+            <code id="conversation-id" class="conversation-chip">未创建</code>
+            <button id="resume-btn" class="ghost-button compact-button" type="button" style="display:none">继续执行</button>
           </div>
         </div>
 
@@ -117,39 +73,43 @@
         <div id="conversation-stream" data-test="conversation-stream" class="chat-transcript"></div>
 
         <form id="composer-form" data-test="composer-form" class="composer-shell">
-          <div class="composer-topline">
-            <label for="composer-input">消息</label>
-            <div class="composer-inline-fields">
-              <label class="composer-select-label" for="composer-task-type">任务类型</label>
-              <select id="composer-task-type" aria-label="任务类型">
-                <option value="coding">编码执行</option>
-                <option value="research">研究分析</option>
-                <option value="file_workflow">文件流处理</option>
-                <option value="general">通用任务</option>
-              </select>
+          <div class="composer-frame">
+            <textarea id="composer-input" aria-label="消息内容" rows="4" placeholder="给 Zheng Harness 发送消息…"></textarea>
+            <div id="composer-validation-error" data-test="composer-validation-error" style="display:none"></div>
+            <div class="composer-footer">
+              <div class="composer-meta">
+                <label class="sr-only" for="composer-task-type">任务类型</label>
+                <select id="composer-task-type" aria-label="任务类型">
+                  <option value="coding">编码执行</option>
+                  <option value="research">研究分析</option>
+                  <option value="file_workflow">文件流处理</option>
+                  <option value="general">通用任务</option>
+                </select>
+                <p class="composer-hint">首条消息会创建新会话，后续消息会追加到当前对话。</p>
+              </div>
+              <button type="submit" id="send-message-btn" class="send-button">发送</button>
             </div>
           </div>
-          <textarea id="composer-input" aria-label="消息内容" rows="4" placeholder="描述你的目标、上下文或下一步指令…"></textarea>
-          <div id="composer-validation-error" data-test="composer-validation-error" style="display:none"></div>
-          <div class="composer-actions">
-            <p class="composer-hint">首条消息将创建新会话；后续消息将追加到当前对话。</p>
-            <button type="submit" id="send-message-btn">发送消息</button>
-          </div>
         </form>
-      </main>
+      </section>
+    </main>
 
-      <aside id="inspect-panel" class="card workspace-panel inspect-panel" style="display:none">
+    <aside id="inspect-panel" class="inspect-panel" style="display:none">
+      <div class="inspect-card card workspace-panel">
         <div class="panel-heading">
           <div>
             <span class="eyebrow">Inspect</span>
             <h3>执行细节</h3>
           </div>
-          <button id="inspect-close" class="ghost-button" type="button">关闭</button>
+          <div class="chat-inline-actions">
+            <button id="disconnect-btn" class="ghost-button compact-button" type="button">断开</button>
+            <button id="inspect-close" class="ghost-button compact-button" type="button">关闭</button>
+          </div>
         </div>
-        <p class="page-subtitle">在不离开聊天上下文的前提下查看计划、工具调用与验证线索。</p>
+        <p class="page-subtitle">查看当前任务计划、工具调用、步骤状态与验证线索。</p>
         <div id="inspect-detail" data-test="inspect-detail"></div>
-      </aside>
-    </div>
+      </div>
+    </aside>
   </div>
 
   <script src="/web/js/auth.js"></script>

@@ -22,6 +22,15 @@ type InspectState struct {
 	Plan    domain.Plan
 	Steps   []domain.Step
 	Lifecycle PersistedSessionLifecycle
+	RequestID     string
+	FailureReason string
+	Finalized     bool
+}
+
+type SessionDiagnostics struct {
+	RequestID     string
+	FailureReason string
+	Finalized     bool
 }
 
 type ListSessionsParams struct {
@@ -78,6 +87,13 @@ type storedSessionMetadata struct {
 	Task         *storedTask              `json:"task,omitempty"`
 	Provenance   *domain.Provenance       `json:"provenance,omitempty"`
 	Conversation *storedConversationState `json:"conversation,omitempty"`
+	Diagnostics  *storedDiagnostics       `json:"diagnostics,omitempty"`
+}
+
+type storedDiagnostics struct {
+	RequestID     string `json:"request_id,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+	Finalized     bool   `json:"finalized,omitempty"`
 }
 
 type storedConversationState struct {
@@ -279,7 +295,7 @@ func (s *SQLiteSessionStore) LoadTask(ctx context.Context, sessionID string) (do
 		return domain.Task{}, false, errors.New("sqlite session store is not initialized")
 	}
 
-	session, metadataTask, _, err := s.loadSessionRecord(ctx, sessionID)
+	session, metadata, _, err := s.loadSessionRecord(ctx, sessionID)
 	if err != nil {
 		return domain.Task{}, false, err
 	}
@@ -295,10 +311,10 @@ func (s *SQLiteSessionStore) LoadTask(ctx context.Context, sessionID string) (do
 		CreatedAt:   session.CreatedAt,
 	}
 
-	stored := metadataTask
-	if stored == nil {
+	if metadata == nil || metadata.Task == nil {
 		return task.Normalize(), false, nil
 	}
+	stored := metadata.Task
 
 	task.Category = stored.Category
 	if stored.Description != "" {
@@ -317,7 +333,7 @@ func (s *SQLiteSessionStore) InspectSession(ctx context.Context, sessionID strin
 		return InspectState{}, errors.New("sqlite session store is not initialized")
 	}
 
-	session, metadataTask, lifecycle, err := s.loadSessionRecord(ctx, sessionID)
+	session, metadata, lifecycle, err := s.loadSessionRecord(ctx, sessionID)
 	if err != nil {
 		return InspectState{}, err
 	}
@@ -338,18 +354,25 @@ func (s *SQLiteSessionStore) InspectSession(ctx context.Context, sessionID strin
 		Goal:        plan.Summary,
 		CreatedAt:   session.CreatedAt,
 	}
-	if metadataTask != nil {
-		task.Category = metadataTask.Category
-		if metadataTask.Description != "" {
-			task.Description = metadataTask.Description
+	if metadata != nil && metadata.Task != nil {
+		storedTask := metadata.Task
+		task.Category = storedTask.Category
+		if storedTask.Description != "" {
+			task.Description = storedTask.Description
 		}
-		if metadataTask.Goal != "" {
-			task.Goal = metadataTask.Goal
+		if storedTask.Goal != "" {
+			task.Goal = storedTask.Goal
 		}
-		task.ProtocolHint = metadataTask.ProtocolHint
-		task.VerificationPolicy = metadataTask.VerificationPolicy
+		task.ProtocolHint = storedTask.ProtocolHint
+		task.VerificationPolicy = storedTask.VerificationPolicy
 	}
-	return InspectState{Session: session, Task: task.Normalize(), Plan: plan, Steps: steps, Lifecycle: lifecycle}, nil
+	inspect := InspectState{Session: session, Task: task.Normalize(), Plan: plan, Steps: steps, Lifecycle: lifecycle}
+	if metadata != nil && metadata.Diagnostics != nil {
+		inspect.RequestID = strings.TrimSpace(metadata.Diagnostics.RequestID)
+		inspect.FailureReason = strings.TrimSpace(metadata.Diagnostics.FailureReason)
+		inspect.Finalized = metadata.Diagnostics.Finalized
+	}
+	return inspect, nil
 }
 
 func (s *SQLiteSessionStore) ListSessions(ctx context.Context, params ListSessionsParams) (*ListSessionsResult, error) {
@@ -357,9 +380,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context, params ListSessio
 		return nil, errors.New("sqlite session store is not initialized")
 	}
 	page := params.Page
-	if page < 1 {
-		page = 1
-	}
+	page = max(page, 1)
 	pageSize := params.PageSize
 	if pageSize < 1 {
 		pageSize = 20
@@ -469,6 +490,43 @@ func (s *SQLiteSessionStore) SaveConversationState(ctx context.Context, sessionI
 	return nil
 }
 
+func (s *SQLiteSessionStore) SaveDiagnostics(ctx context.Context, sessionID string, diagnostics SessionDiagnostics) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite session store is not initialized")
+	}
+
+	metadata, err := s.loadSessionMetadata(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("load existing session metadata for session %q: %w", sessionID, err)
+	}
+	if metadata.Diagnostics == nil {
+		metadata.Diagnostics = &storedDiagnostics{}
+	}
+	if requestID := strings.TrimSpace(diagnostics.RequestID); requestID != "" {
+		metadata.Diagnostics.RequestID = requestID
+	}
+	if failureReason := strings.TrimSpace(diagnostics.FailureReason); failureReason != "" {
+		metadata.Diagnostics.FailureReason = failureReason
+	}
+	if diagnostics.Finalized {
+		metadata.Diagnostics.Finalized = true
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("marshal diagnostics metadata for session %q: %w", sessionID, err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET config_json = ?, updated_at = CASE WHEN updated_at > created_at THEN updated_at ELSE created_at END
+		WHERE id = ?
+	`, string(encoded), sessionID)
+	if err != nil {
+		return fmt.Errorf("save diagnostics metadata for session %q: %w", sessionID, err)
+	}
+	return nil
+}
+
 func (s *SQLiteSessionStore) ListConversationSessions(ctx context.Context, conversationID string) ([]ConversationSessionRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("sqlite session store is not initialized")
@@ -567,7 +625,7 @@ func (s *SQLiteSessionStore) loadSession(ctx context.Context, sessionID string) 
 	return session, lifecycle, err
 }
 
-func (s *SQLiteSessionStore) loadSessionRecord(ctx context.Context, sessionID string) (domain.Session, *storedTask, PersistedSessionLifecycle, error) {
+func (s *SQLiteSessionStore) loadSessionRecord(ctx context.Context, sessionID string) (domain.Session, *storedSessionMetadata, PersistedSessionLifecycle, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, task_id, status, lifecycle_phase, is_active, is_terminal, is_resumable, config_json, created_at, updated_at
 		FROM sessions
@@ -604,7 +662,7 @@ func (s *SQLiteSessionStore) loadSessionRecord(ctx context.Context, sessionID st
 		return domain.Session{}, nil, PersistedSessionLifecycle{}, fmt.Errorf("load session %q provenance: %w", sessionID, err)
 	}
 	session.Provenance = mergeStoredProvenance(metadata.Provenance, persistedProvenance)
-	return session, metadata.Task, lifecycle, nil
+	return session, &metadata, lifecycle, nil
 }
 
 func (s *SQLiteSessionStore) loadLatestPlan(ctx context.Context, taskID string) (domain.Plan, error) {

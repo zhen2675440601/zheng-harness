@@ -31,6 +31,29 @@ async function createSessionViaAPI(request, task) {
   return response.json();
 }
 
+async function connectManually(page, token) {
+  await page.goto('/', { waitUntil: 'networkidle' });
+  await expect(page.locator('#auth-screen')).toBeVisible();
+  await page.getByLabel(/JWT Token|JWT 令牌/).fill(token);
+  await page.getByRole('button', { name: /Connect|进入聊天工作台|连接/ }).click();
+}
+
+async function submitMessage(page, message) {
+  const responsePromise = page.waitForResponse((response) => {
+    return response.url().includes('/api/v1/chat/start') && response.request().method() === 'POST';
+  });
+
+  await page.getByRole('textbox', { name: /消息内容/ }).fill(message);
+  await page.getByRole('button', { name: /发送消息/ }).click();
+
+  const response = await responsePromise;
+  expect(response.status()).toBe(202);
+
+  await expect(page.locator('#conversation-id')).not.toHaveText('未创建');
+  await expect(page.locator('#conversation-stream')).toContainText(message, { timeout: 15000 });
+  await expect(page.locator('#conversation-stream')).toContainText(/assistant|Mock provider completed the requested task|Deterministic mock plan|会话已完成：/, { timeout: 15000 });
+}
+
 test.describe.configure({ mode: 'serial' });
 
 let serverProcess;
@@ -137,6 +160,113 @@ test.describe('WebUI', () => {
       await page.getByRole('textbox', { name: /消息内容/ }).fill('malformed sse test');
       await page.getByRole('button', { name: /发送消息/ }).click();
       await expect(page.locator('#conversation-stream')).toContainText(/会话已完成：/, { timeout: 15000 });
+    });
+  });
+
+  test.describe('reliability', () => {
+    test('WebUI: manual JWT login succeeds and persists workspace on reload', async ({ page }) => {
+      await connectManually(page, validToken);
+      await expect(page.locator('#main-content')).toBeVisible({ timeout: 15000 });
+      await expect(page.locator('#conversation-list')).toBeVisible();
+
+      await page.reload({ waitUntil: 'networkidle' });
+
+      await expect(page.locator('#main-content')).toBeVisible({ timeout: 15000 });
+      await expect(page.locator('#page-chat')).toBeVisible();
+      await expect(page.locator('#auth-screen')).toBeHidden();
+    });
+
+    test('WebUI: invalid JWT keeps user on auth screen with visible error feedback', async ({ page }) => {
+      await connectManually(page, 'bad.token.value');
+      await expect(page.locator('#auth-screen')).toBeVisible();
+      await expect(page.locator('#auth-error')).toBeVisible();
+      await expect(page.locator('#auth-error')).toContainText(/invalid token/i);
+      await expect(page.locator('#main-content')).toBeHidden();
+    });
+
+    test('WebUI: expired JWT returns to auth screen after bootstrap fails', async ({ page }) => {
+      const expiredToken = makeJWT(undefined, new Date(Date.now() - 60_000));
+      await page.goto('/', { waitUntil: 'networkidle' });
+      await page.waitForSelector('#auth-screen', { state: 'visible' });
+      await page.evaluate((token) => {
+        window.localStorage.setItem('zhengHarness.jwt', token);
+      }, expiredToken);
+      await page.reload({ waitUntil: 'networkidle' });
+      await expect(page.locator('#auth-screen')).toBeVisible();
+      await expect(page.locator('#auth-error')).toContainText(/expired|过期/i);
+    });
+
+    test('WebUI: empty composer blocks submission until message is provided', async ({ page }) => {
+      await connect(page);
+      await page.getByRole('button', { name: /发送消息/ }).click();
+      await expect(page.locator('#composer-validation-error')).toBeVisible();
+      await expect(page.locator('#composer-validation-error')).toContainText(/请输入消息后再发送。/);
+      await expect(page.locator('#conversation-id')).toHaveText('未创建');
+    });
+
+    test('WebUI: normal chat submission streams response and records session history', async ({ page }) => {
+      await connect(page);
+      await submitMessage(page, 'reliability happy path message');
+      await expect(page.locator('#conversation-stream')).toContainText('reliability happy path message');
+      await expect(page.locator('#conversation-list')).toContainText(/reliability happy path message/, { timeout: 15000 });
+    });
+
+    test('WebUI: visible submit failure feedback is shown when chat start request fails', async ({ page }) => {
+      await page.route('**/api/v1/chat/start', async (route) => {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: {
+              code: 'internal_error',
+              message: 'mocked chat start failure',
+            },
+            request_id: 'req-playwright-failure',
+          }),
+        });
+      });
+
+      await connect(page);
+      await page.getByRole('textbox', { name: /消息内容/ }).fill('should fail to submit');
+      await page.getByRole('button', { name: /发送消息/ }).click();
+
+      await expect(page.locator('#composer-error')).toBeVisible();
+      await expect(page.locator('#composer-error')).toContainText(/mocked chat start failure/);
+      await expect(page.locator('#conversation-id')).toHaveText('未创建');
+    });
+
+    test('WebUI: refresh preserves active conversation transcript and session continuity', async ({ page }) => {
+      await connect(page);
+      await submitMessage(page, 'refresh continuity message');
+
+      const conversationId = (await page.locator('#conversation-id').textContent()).trim();
+      expect(conversationId).toBeTruthy();
+      expect(conversationId).not.toBe('未创建');
+
+      await page.reload({ waitUntil: 'networkidle' });
+
+      await expect(page.locator('#main-content')).toBeVisible({ timeout: 15000 });
+      await expect(page.locator('#conversation-id')).toHaveText(conversationId);
+      await expect(page.locator('#conversation-stream')).toContainText('refresh continuity message', { timeout: 15000 });
+      await expect(page.locator('#conversation-stream')).toContainText(/assistant|Mock provider completed the requested task|Deterministic mock plan|会话已完成：/, { timeout: 15000 });
+      await expect(page.locator('#conversation-list')).toContainText(/refresh continuity message/, { timeout: 15000 });
+    });
+
+    test('WebUI: stale conversation deep link recovers after re-authentication', async ({ page, request }) => {
+      await createSessionViaAPI(request, 'stale route test session');
+      await connect(page);
+      await page.goto('/#/chat/conversation-does-not-exist', { waitUntil: 'networkidle' });
+      await expect(page.locator('#composer-error')).toContainText(/加载对话失败|not found/i, { timeout: 15000 });
+
+      await page.evaluate(() => {
+        window.localStorage.removeItem('zhengHarness.jwt');
+      });
+      await page.reload({ waitUntil: 'networkidle' });
+      await expect(page.locator('#auth-screen')).toBeVisible();
+      await page.getByLabel(/JWT Token|JWT 令牌/).fill(validToken);
+      await page.getByRole('button', { name: /Connect|连接/ }).click();
+      await expect(page.locator('#conversation-list')).toBeVisible();
+      await expect(page.locator('#composer-error')).toHaveCount(0);
     });
   });
 });

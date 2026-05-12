@@ -103,6 +103,9 @@ type inspectResponse struct {
 	Status      string        `json:"status"`
 	Task        string        `json:"task"`
 	TaskType    string        `json:"task_type,omitempty"`
+	RequestID   string        `json:"request_id,omitempty"`
+	FailureReason string      `json:"failure_reason,omitempty"`
+	Finalized   bool          `json:"finalized,omitempty"`
 	CreatedAt   time.Time     `json:"created_at"`
 	UpdatedAt   time.Time     `json:"updated_at"`
 	Steps       []inspectStep `json:"steps"`
@@ -155,6 +158,8 @@ type sseWriter struct {
 	w http.ResponseWriter
 	fl http.Flusher
 }
+
+var errMalformedStreamEvent = errors.New("malformed stream event")
 
 type apiError struct {
 	status  int
@@ -435,6 +440,9 @@ func (a *API) HandleStream(w http.ResponseWriter, r *http.Request) error {
 				return nil
 			}
 			if err := writer.writeEvent(event); err != nil {
+				if errors.Is(err, errMalformedStreamEvent) {
+					continue
+				}
 				return nil
 			}
 		}
@@ -499,8 +507,12 @@ func (a *API) mapServiceError(err error, defaultMessage string) error {
 		}
 		return &apiError{status: http.StatusConflict, code: code, message: conflictErr.Error(), err: err}
 	}
-	if _, ok := errors.AsType[*service.NotFoundError](err); ok {
-		return &apiError{status: http.StatusNotFound, code: "not_found", message: "session not found", err: err}
+if notFoundErr, ok := errors.AsType[*service.NotFoundError](err); ok {
+		msg := notFoundErr.Error()
+		if notFoundErr.ID != "" {
+			msg = fmt.Sprintf("%s %q not found", notFoundErr.Kind, notFoundErr.ID)
+		}
+		return &apiError{status: http.StatusNotFound, code: "not_found", message: msg, err: err}
 	}
 	switch {
 	case errors.Is(err, runtime.ErrSessionAlreadyActive), errors.Is(err, runtime.ErrActiveSessionLimit), errors.Is(err, runtime.ErrSessionManagerClosed):
@@ -586,7 +598,7 @@ func (w sseWriter) writeEvent(event domain.StreamingEvent) error {
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errMalformedStreamEvent, err)
 	}
 	if _, err := io.WriteString(w.w, "event: "+string(event.Type)+"\n"); err != nil {
 		return err
@@ -898,6 +910,7 @@ func (a *API) validateProvenanceForResume(p *domain.Provenance) []string {
 	}
 	return errs
 }
+
 
 func deriveTerminationReason(session domain.Session, steps []domain.Step) string {
 	if len(steps) > 0 {

@@ -378,6 +378,93 @@ func TestSessionActorSlowSubscriberGetsOverflowWithoutCancellingActor(t *testing
 	<-actor.Done()
 }
 
+func TestSessionActorSubscribeAfterCompletionReturnsClosedSubscription(t *testing.T) {
+	t.Parallel()
+
+	manager := runtime.NewSessionManager(runtime.SessionManagerOptions{ActiveSessionCap: 1})
+	actor, err := manager.Start(context.Background(), runtime.SessionStartRequest{
+		SessionID: "session-completed-subscribe",
+		Task:      domain.Task{ID: "session-completed-subscribe", Description: "complete", Goal: "complete", CreatedAt: time.Now().UTC()},
+		NewRunner: func(events *runtime.EventChannel) (runtime.SessionRunner, error) {
+			return managerTestRunnerFunc(func(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
+				event, buildErr := domain.SessionComplete(task.ID, "success")
+				if buildErr != nil {
+					return domain.Session{}, domain.Plan{}, nil, buildErr
+				}
+				if emitErr := events.Emit(*event); emitErr != nil {
+					return domain.Session{}, domain.Plan{}, nil, emitErr
+				}
+				now := time.Now().UTC()
+				return domain.Session{ID: task.ID, TaskID: task.ID, Status: domain.SessionStatusSuccess, CreatedAt: now, UpdatedAt: now}, domain.Plan{}, nil, nil
+			}), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+
+	<-actor.Done()
+	sub := actor.Subscribe(4)
+	if sub == nil {
+		t.Fatal("Subscribe() returned nil")
+	}
+	defer sub.Close()
+
+	select {
+	case _, ok := <-sub.Events():
+		if ok {
+			t.Fatal("expected subscription created after completion to be closed")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("subscription created after completion remained open")
+	}
+}
+
+func TestSessionActorRunnerFailurePropagatesToFinalState(t *testing.T) {
+	t.Parallel()
+
+	store := &managerTestSessionStore{}
+	manager := runtime.NewSessionManager(runtime.SessionManagerOptions{ActiveSessionCap: 1})
+	runErr := errors.New("runner exploded")
+
+	actor, err := manager.Start(context.Background(), runtime.SessionStartRequest{
+		SessionID: "session-runner-failure",
+		Task:      domain.Task{ID: "session-runner-failure", Description: "fail", Goal: "fail", CreatedAt: time.Now().UTC()},
+		NewRunner: func(_ *runtime.EventChannel) (runtime.SessionRunner, error) {
+			return managerTestRunnerFunc(func(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
+				return domain.Session{ID: task.ID, TaskID: task.ID, Status: domain.SessionStatusFatalError}, domain.Plan{}, nil, runErr
+			}), nil
+		},
+		PersistFinal: persistFinalWithAlias(store, "session-runner-failure"),
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	<-actor.Done()
+	result, ok := actor.Result()
+	if !ok {
+		t.Fatal("actor result missing")
+	}
+	if result.State != runtime.ActorStateFailed {
+		t.Fatalf("actor state = %q, want %q", result.State, runtime.ActorStateFailed)
+	}
+	if !errors.Is(result.Err, runErr) {
+		t.Fatalf("result err = %v, want %v", result.Err, runErr)
+	}
+	persisted := store.last("session-runner-failure")
+	if persisted.Status != domain.SessionStatusFatalError {
+		t.Fatalf("persisted status = %q, want %q", persisted.Status, domain.SessionStatusFatalError)
+	}
+	if manager.ActiveCount() != 0 {
+		t.Fatalf("active count = %d, want 0", manager.ActiveCount())
+	}
+	if err := manager.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
+
 type managerTestRunnerFunc func(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error)
 
 func (f managerTestRunnerFunc) Run(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {

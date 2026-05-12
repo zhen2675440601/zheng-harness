@@ -76,6 +76,17 @@ func TestStartConversationRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestStartConversationRejectsUnsupportedTaskType(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newTestChatService(t)
+
+	_, err := svc.StartConversation(context.Background(), "demo task", StartConversationOptions{TaskType: "unsupported-mode"})
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Error() != "task_type must be one of general, coding, research, file_workflow" {
+		t.Fatalf("StartConversation() error = %v, want unsupported task_type validation error", err)
+	}
+}
+
 func TestStartConversationReturnsProviderError(t *testing.T) {
 	t.Parallel()
 	svc, manager, sessionStore := newTestChatService(t)
@@ -175,6 +186,17 @@ func TestSubmitReplyRejectsRunningConversation(t *testing.T) {
 	}
 	close(block)
 	_ = manager.Shutdown(context.Background())
+}
+
+func TestStartChatRejectsUnsupportedTaskType(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newTestChatService(t)
+
+	_, err := svc.StartChat(context.Background(), StartChatRequest{Message: "hello", TaskType: "unsupported-mode"})
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Error() != "task_type must be one of general, coding, research, file_workflow" {
+		t.Fatalf("StartChat() error = %v, want unsupported task_type validation error", err)
+	}
 }
 
 func TestSubmitReplyReturnsNotFoundForMissingConversation(t *testing.T) {
@@ -302,6 +324,35 @@ func TestGetTranscriptBuildsEmptyStateFromStandaloneSession(t *testing.T) {
 	}
 	if len(transcript.Chat.Messages) != 0 {
 		t.Fatalf("message count = %d, want 0 for empty state", len(transcript.Chat.Messages))
+	}
+}
+
+func TestGetTranscriptExposesDiagnosticCorrelationAndFailureReason(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionStore := newTestChatService(t)
+	now := svc.Now().UTC()
+	if err := sessionStore.SaveSession(context.Background(), domain.Session{ID: "sess-failed", TaskID: "sess-failed", Status: domain.SessionStatusFatalError, CreatedAt: now, UpdatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	if err := sessionStore.SaveTask(context.Background(), "sess-failed", domain.Task{ID: "sess-failed", Description: "failed run", Goal: "failed run", CreatedAt: now, Category: domain.TaskCategoryCoding}.Normalize()); err != nil {
+		t.Fatalf("SaveTask() error = %v", err)
+	}
+	if err := sessionStore.SaveDiagnostics(context.Background(), "sess-failed", store.SessionDiagnostics{RequestID: "req-service-123", FailureReason: "runner initialization failed", Finalized: true}); err != nil {
+		t.Fatalf("SaveDiagnostics() error = %v", err)
+	}
+
+	transcript, err := svc.GetTranscript(context.Background(), "sess-failed")
+	if err != nil {
+		t.Fatalf("GetTranscript() error = %v", err)
+	}
+	if transcript.Inspect.RequestID != "req-service-123" {
+		t.Fatalf("inspect request id = %q, want req-service-123", transcript.Inspect.RequestID)
+	}
+	if transcript.Inspect.FailureReason != "runner initialization failed" {
+		t.Fatalf("inspect failure reason = %q, want runner initialization failed", transcript.Inspect.FailureReason)
+	}
+	if !transcript.Inspect.Finalized {
+		t.Fatal("inspect finalized = false, want true")
 	}
 }
 

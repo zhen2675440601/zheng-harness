@@ -269,6 +269,44 @@ func TestChatReplyReturns404ForMissingConversation(t *testing.T) {
 	}
 }
 
+func TestRunReturnsStructuredValidationEnvelopeForUnsupportedTaskType(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/run", bytes.NewBufferString(`{"task":"demo","task_type":"unsupported-mode"}`))
+	req.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /api/v1/run status = %d, want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	var payload errorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal validation payload: %v", err)
+	}
+	if payload.Error.Code != "invalid_request" || payload.Error.Message != "task_type must be one of general, coding, research, file_workflow" {
+		t.Fatalf("validation payload = %#v, want structured unsupported task_type envelope", payload)
+	}
+}
+
+func TestChatStartReturnsStructuredValidationEnvelopeForUnsupportedTaskType(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/start", bytes.NewBufferString(`{"message":"hello","task_type":"unsupported-mode"}`))
+	req.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /api/v1/chat/start status = %d, want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	var payload errorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal validation payload: %v", err)
+	}
+	if payload.Error.Code != "invalid_request" || payload.Error.Message != "task_type must be one of general, coding, research, file_workflow" {
+		t.Fatalf("validation payload = %#v, want structured unsupported task_type envelope", payload)
+	}
+}
+
 func TestChatTranscriptReturns404ForMissingConversation(t *testing.T) {
 	t.Parallel()
 	h := newTestAPIHarness(t)
@@ -622,6 +660,53 @@ func TestInspectReturnsPersistedState(t *testing.T) {
 	}
 }
 
+func TestInspectExposesDiagnosticCorrelationAndFailureReason(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	const sessionID = "session-diagnostics"
+	now := time.Date(2026, 5, 6, 11, 0, 0, 0, time.UTC)
+	if err := h.sessionStore.SaveSession(context.Background(), domain.Session{ID: sessionID, TaskID: sessionID, Status: domain.SessionStatusFatalError, CreatedAt: now, UpdatedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	if err := h.sessionStore.SaveTask(context.Background(), sessionID, domain.Task{ID: sessionID, Description: "broken task", Goal: "broken task", Category: domain.TaskCategoryCoding, CreatedAt: now}); err != nil {
+		t.Fatalf("SaveTask() error = %v", err)
+	}
+	if err := h.sessionStore.SavePlan(context.Background(), domain.Plan{ID: "plan-" + sessionID, TaskID: sessionID, Summary: "recover stream", CreatedAt: now}); err != nil {
+		t.Fatalf("SavePlan() error = %v", err)
+	}
+	step := domain.Step{
+		Index: 1,
+		Observation: domain.Observation{
+			Summary:       "stream disconnected upstream",
+			FinalResponse: "stream disconnected upstream",
+		},
+		Verification: domain.VerificationResult{
+			Reason: "stream disconnected upstream",
+		},
+	}
+	if err := h.sessionStore.AppendStep(context.Background(), sessionID, step); err != nil {
+		t.Fatalf("AppendStep() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+sessionID+"/inspect", nil)
+	req.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /inspect status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var payload inspectResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if payload.Plan != "recover stream" {
+		t.Fatalf("plan = %q, want recover stream", payload.Plan)
+	}
+	if payload.Termination != "stream disconnected upstream" {
+		t.Fatalf("termination_reason = %q, want stream disconnected upstream", payload.Termination)
+	}
+}
+
 func TestListSessionsReturnsPaginatedSummaries(t *testing.T) {
 	t.Parallel()
 	h := newTestAPIHarness(t)
@@ -910,6 +995,148 @@ func TestStreamDisconnectDoesNotCancelSession(t *testing.T) {
 	}
 	close(allowFinish)
 	waitForActiveCount(t, h.manager, 0)
+}
+
+func TestStreamTerminatedSessionReturnsNoSSEBody(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	now := time.Now().UTC()
+	if err := h.sessionStore.SaveSession(context.Background(), domain.Session{ID: "session-closed", TaskID: "session-closed", Status: domain.SessionStatusSuccess, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	if err := h.sessionStore.SaveTask(context.Background(), "session-closed", domain.Task{ID: "session-closed", Description: "closed", Goal: "closed", CreatedAt: now}); err != nil {
+		t.Fatalf("SaveTask() error = %v", err)
+	}
+
+	writer := newStreamingResponseWriter()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/session-closed/stream", nil)
+	req.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(writer, req)
+
+	if writer.status != 0 {
+		t.Fatalf("GET /stream status = %d, want no SSE response for terminated session", writer.status)
+	}
+	if body := writer.BodyString(); body != "" {
+		t.Fatalf("terminated stream body = %q, want empty", body)
+	}
+}
+
+func TestStreamWriteFailureStopsHandlerWithoutPartialEventFrame(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	release := make(chan struct{})
+	actor, err := h.manager.Start(context.Background(), runtime.SessionStartRequest{
+		SessionID: "session-stream-write-failure",
+		Task:      domain.Task{ID: "session-stream-write-failure", Description: "writer fail", Goal: "writer fail", CreatedAt: time.Now().UTC()},
+		NewRunner: func(events *runtime.EventChannel) (runtime.SessionRunner, error) {
+			return runnerFunc(func(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
+				<-release
+				event, buildErr := domain.TokenDelta(1, "hello")
+				if buildErr != nil {
+					return domain.Session{}, domain.Plan{}, nil, buildErr
+				}
+				if emitErr := events.Emit(*event); emitErr != nil {
+					return domain.Session{}, domain.Plan{}, nil, emitErr
+				}
+				return domain.Session{ID: task.ID, TaskID: task.ID, Status: domain.SessionStatusSuccess, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, domain.Plan{}, nil, nil
+			}), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer actor.Cancel(context.Canceled)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	writer := newFailingStreamingResponseWriter(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		streamReq := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/session-stream-write-failure/stream", nil).WithContext(ctx)
+		streamReq.Header.Set("Authorization", "Bearer "+h.jwt)
+		h.router.ServeHTTP(writer, streamReq)
+	}()
+
+	waitForBodyContains(t, writer.streamingResponseWriter, ": stream opened; no replay")
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream handler did not exit after writer failure")
+	}
+	if body := writer.BodyString(); strings.Contains(body, "event: token_delta") {
+		t.Fatalf("stream body contains partial event header after write failure: %s", body)
+	}
+}
+
+func TestStreamSkipsMalformedEventsAndContinuesToTerminalEvent(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	release := make(chan struct{})
+	actor, err := h.manager.Start(context.Background(), runtime.SessionStartRequest{
+		SessionID: "session-stream-malformed",
+		Task:      domain.Task{ID: "session-stream-malformed", Description: "malformed", Goal: "malformed", CreatedAt: time.Now().UTC()},
+		NewRunner: func(events *runtime.EventChannel) (runtime.SessionRunner, error) {
+			return runnerFunc(func(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
+				<-release
+				bad := domain.StreamingEvent{Type: domain.EventTokenDelta, StepIndex: 1, Payload: domain.EventPayload([]byte("{")), Timestamp: time.Now().UTC()}
+				complete, completeErr := domain.SessionComplete(task.ID, "success")
+				for _, event := range []domain.StreamingEvent{bad, mustEvent(t, complete, completeErr)} {
+					if emitErr := events.Emit(event); emitErr != nil {
+						return domain.Session{}, domain.Plan{}, nil, emitErr
+					}
+				}
+				return domain.Session{ID: task.ID, TaskID: task.ID, Status: domain.SessionStatusSuccess, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, domain.Plan{}, nil, nil
+			}), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer actor.Cancel(context.Canceled)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	writer := newStreamingResponseWriter()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		streamReq := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/session-stream-malformed/stream", nil).WithContext(ctx)
+		streamReq.Header.Set("Authorization", "Bearer "+h.jwt)
+		h.router.ServeHTTP(writer, streamReq)
+	}()
+	waitForBodyContains(t, writer, ": stream opened; no replay")
+	close(release)
+	waitForBodyContains(t, writer, "event: session_complete")
+	cancel()
+	<-done
+
+	body := writer.BodyString()
+	if strings.Contains(body, "event: token_delta") {
+		t.Fatalf("malformed event should not be written: %s", body)
+	}
+	if !strings.Contains(body, "event: session_complete") {
+		t.Fatalf("session complete missing after malformed event: %s", body)
+	}
+}
+
+func TestStreamReturnsStructuredNotFoundEnvelopeForMissingSession(t *testing.T) {
+	t.Parallel()
+	h := newTestAPIHarness(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/missing-session/stream", nil)
+	req.Header.Set("Authorization", "Bearer "+h.jwt)
+	h.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/v1/sessions/{id}/stream status = %d, want 404 body=%s", rec.Code, rec.Body.String())
+	}
+	var payload errorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal stream error payload: %v", err)
+	}
+	if payload.Error.Code != "not_found" || !strings.Contains(payload.Error.Message, "missing-session") {
+		t.Fatalf("stream error payload = %#v, want structured not_found envelope naming missing session", payload)
+	}
 }
 
 func TestRunReturns429WhenActiveSessionCapExceeded(t *testing.T) {

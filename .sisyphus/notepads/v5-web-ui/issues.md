@@ -1,0 +1,2 @@
+- 2026-05-12: `lsp_diagnostics` for `internal/server/web/index.html` and `internal/server/web/css/app.css` is blocked because the configured Biome LSP is not installed in this environment (`Command not found: biome`). JS diagnostics did return clean.
+- 2026-05-12: `go test ./...` is currently failing in unrelated plugin/runtime fixtures because expected paths under `testdata/plugins/echo_plugin` and `testdata/runtime/unsafe_tool_rejection.json` are missing; this UI-only change did not modify those backend test areas.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"zheng-harness/internal/config"
 	"zheng-harness/internal/domain"
 	"zheng-harness/internal/runtime"
@@ -119,6 +120,10 @@ func (s *ChatService) StartConversation(ctx context.Context, taskText string, op
 	if verifyMode != "" && !isSupportedVerifyMode(verifyMode) {
 		return nil, &ValidationError{Message: "verify_mode must be one of off, standard, strict"}
 	}
+	taskType := strings.TrimSpace(opts.TaskType)
+	if taskType != "" && !isSupportedTaskType(taskType) {
+		return nil, &ValidationError{Message: "task_type must be one of general, coding, research, file_workflow"}
+	}
 
 	now := s.Now().UTC()
 	sessionID := fmt.Sprintf("session-%d", now.UnixNano())
@@ -136,6 +141,9 @@ func (s *ChatService) StartConversation(ctx context.Context, taskText string, op
 	}
 	if err := s.sessionStore.SaveTask(ctx, sessionID, task); err != nil {
 		return nil, fmt.Errorf("save task metadata: %w", err)
+	}
+	if err := s.persistSessionDiagnostics(ctx, sessionID, "", false); err != nil {
+		return nil, fmt.Errorf("save session diagnostics: %w", err)
 	}
 	if _, err := s.manager.Start(context.Background(), runtime.SessionStartRequest{
 		SessionID: sessionID,
@@ -172,6 +180,10 @@ func (s *ChatService) StartChat(ctx context.Context, req StartChatRequest) (*Cha
 	if verifyMode != "" && !isSupportedVerifyMode(verifyMode) {
 		return nil, &ValidationError{Message: "verify_mode must be one of off, standard, strict"}
 	}
+	taskType := strings.TrimSpace(req.TaskType)
+	if taskType != "" && !isSupportedTaskType(taskType) {
+		return nil, &ValidationError{Message: "task_type must be one of general, coding, research, file_workflow"}
+	}
 
 	now := s.Now().UTC()
 	conversationID := fmt.Sprintf("conversation-%d", now.UnixNano())
@@ -190,6 +202,9 @@ func (s *ChatService) StartChat(ctx context.Context, req StartChatRequest) (*Cha
 	}
 	if err := s.sessionStore.SaveTask(ctx, sessionID, task); err != nil {
 		return nil, fmt.Errorf("save task metadata: %w", err)
+	}
+	if err := s.persistSessionDiagnostics(ctx, sessionID, "", false); err != nil {
+		return nil, fmt.Errorf("save session diagnostics: %w", err)
 	}
 	if err := s.sessionStore.SaveConversationState(ctx, sessionID, conversationID, "", 0); err != nil {
 		return nil, fmt.Errorf("save conversation metadata: %w", err)
@@ -285,6 +300,9 @@ func (s *ChatService) SubmitReply(ctx context.Context, conversationID, message s
 	}
 	if err := s.sessionStore.SaveTask(ctx, sessionID, task); err != nil {
 		return nil, fmt.Errorf("save task metadata: %w", err)
+	}
+	if err := s.persistSessionDiagnostics(ctx, sessionID, "", false); err != nil {
+		return nil, fmt.Errorf("save session diagnostics: %w", err)
 	}
 	if err := s.sessionStore.SaveConversationState(ctx, sessionID, conversationID, parent.Session.ID, parent.TurnIndex+1); err != nil {
 		return nil, fmt.Errorf("save conversation metadata: %w", err)
@@ -531,6 +549,11 @@ func (s *ChatService) newEngine(events *runtime.EventChannel, task domain.Task, 
 
 func (s *ChatService) persistFatalOnRunnerError(createdAt time.Time) runtime.SessionActorFinalizer {
 	return func(ctx context.Context, result runtime.SessionActorResult) error {
+		failureReason := ""
+		if result.Err != nil {
+			failureReason = strings.TrimSpace(result.Err.Error())
+		}
+		_ = s.sessionStore.SaveDiagnostics(ctx, result.SessionID, store.SessionDiagnostics{FailureReason: failureReason, Finalized: true})
 		if result.Err != nil && result.Session.Status == "" {
 			failed := domain.Session{
 				ID:        result.SessionID,
@@ -543,6 +566,21 @@ func (s *ChatService) persistFatalOnRunnerError(createdAt time.Time) runtime.Ses
 		}
 		return nil
 	}
+}
+
+func (s *ChatService) persistSessionDiagnostics(ctx context.Context, sessionID, failureReason string, finalized bool) error {
+	if s == nil || s.sessionStore == nil {
+		return nil
+	}
+	requestID := strings.TrimSpace(middleware.GetReqID(ctx))
+	if requestID == "" && strings.TrimSpace(failureReason) == "" && !finalized {
+		return nil
+	}
+	return s.sessionStore.SaveDiagnostics(ctx, sessionID, store.SessionDiagnostics{
+		RequestID:     requestID,
+		FailureReason: strings.TrimSpace(failureReason),
+		Finalized:     finalized,
+	})
 }
 
 func (s *ChatService) validateProvenanceForResume(p *domain.Provenance) []string {
@@ -647,6 +685,15 @@ func conversationStatusForSession(status domain.SessionStatus) domain.Conversati
 func isSupportedVerifyMode(value string) bool {
 	switch strings.TrimSpace(value) {
 	case "", config.VerifyModeOff, config.VerifyModeStandard, config.VerifyModeStrict:
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedTaskType(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "general", "coding", "research", "file_workflow":
 		return true
 	default:
 		return false

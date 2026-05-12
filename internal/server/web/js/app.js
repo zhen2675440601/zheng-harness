@@ -38,6 +38,7 @@
     jwtInput: byId('jwt-input'),
     connectBtn: byId('connect-btn'),
     disconnectBtn: byId('disconnect-btn'),
+    newChatBtn: byId('new-chat-btn'),
     historyToggle: byId('history-toggle'),
     historyClose: byId('history-close'),
     historyRefresh: byId('history-refresh'),
@@ -303,16 +304,29 @@
     renderInspectPlaceholder();
     setDisconnectBanner('');
     clearComposerError();
+    clearComposerValidationError();
+    setStreamStatus('空闲');
+    setConnectionState('green', '已连接');
+  }
+
+  function startNewChat() {
+    resetWorkspace();
+    state.inspectOpen = false;
+    applyInspectVisibility();
+    updateHash({ conversationId: '', inspect: false });
+    if (els.composerInput) {
+      els.composerInput.focus();
+    }
   }
 
   function renderHeader() {
     var conversationId = state.currentConversationId || '未创建';
-    var title = state.currentConversationId ? '对话 ' + state.currentConversationId : '新对话';
+    var title = state.currentConversationId ? '当前对话' : '新对话';
     var subtitle = '发送第一条消息以创建会话。';
     if (state.currentConversationId && state.currentSessionId) {
-      subtitle = '当前会话 ' + state.currentSessionId + ' · 最近流式输出将在当前转录中内联展示。';
+      subtitle = '当前会话 ' + state.currentSessionId + ' · 最近响应会持续追加到下方消息流。';
     } else if (state.currentConversationId) {
-      subtitle = '历史转录已载入，可继续追加消息。';
+      subtitle = '历史消息已载入，可继续在当前线程追加上下文。';
     }
 
     setText(els.conversationId, conversationId);
@@ -360,7 +374,7 @@
       return;
     }
     if (!state.transcript.length && state.streamingTurnIndex == null) {
-      setHTML(els.conversationStream, '<div class="transcript-empty"><p>这里会显示完整对话记录、工具进度和状态变化。</p><p>先发送一条消息，开始新的智能体协作。</p></div>');
+      setHTML(els.conversationStream, '<div class="transcript-empty"><p>这里会显示完整对话记录、工具进度和状态变化。</p><p>点击左侧“新对话”或直接在底部输入第一条消息开始。</p></div>');
       return;
     }
 
@@ -736,8 +750,11 @@
       openConversation(route.conversationId, '');
       return;
     }
-    if (!route.conversationId && state.currentConversationId && !route.inspect) {
-      updateHash({ conversationId: state.currentConversationId, inspect: false });
+    if (!route.conversationId) {
+      if (state.currentConversationId) {
+        resetWorkspace();
+      }
+      renderHeader();
     }
   }
 
@@ -852,6 +869,12 @@
       });
     }
 
+    if (els.newChatBtn) {
+      els.newChatBtn.addEventListener('click', function () {
+        startNewChat();
+      });
+    }
+
     if (els.historyClose) {
       els.historyClose.addEventListener('click', function () {
         state.historyOpen = false;
@@ -880,6 +903,10 @@
         }
         updateHash({ conversationId: target.getAttribute('data-conversation-id') || '', inspect: false });
         openConversation(target.getAttribute('data-conversation-id') || '', target.getAttribute('data-session-id') || '');
+        if (window.innerWidth <= 1100) {
+          state.historyOpen = false;
+          applyHistoryVisibility();
+        }
       });
     }
 
