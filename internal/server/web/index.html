@@ -10,16 +10,46 @@
   <div id="auth-screen" data-test="auth-panel">
     <div class="card auth-card">
       <div class="auth-copy">
-        <span class="eyebrow">Embedded Chat Workspace</span>
-        <h1>连接 Harness 智能体</h1>
-        <p>输入 JWT 后直接进入对话工作台，在同一界面完成提问、流式观察、历史切换与执行复盘。</p>
+        <span class="eyebrow">Private Operator Console</span>
+        <h1>登录 Zheng Harness</h1>
+        <p>使用用户名和密码进入对话工作台。首次访问可直接注册；如需兼容旧流程，仍可使用 JWT 令牌快速接入。</p>
       </div>
       <div id="auth-auto-connecting" style="display:none">
         <p>正在自动连接...</p>
       </div>
-      <div id="auth-manual" style="display:block">
-        <input type="password" id="jwt-input" aria-label="JWT 令牌" placeholder="请输入或粘贴 JWT 令牌">
-        <button id="connect-btn">进入聊天工作台</button>
+      <div id="auth-manual" class="auth-manual-shell" style="display:block">
+        <div class="auth-panel-grid">
+          <section class="auth-form-panel">
+            <div class="auth-form-header">
+              <span id="auth-mode-badge" class="auth-mode-badge">登录模式</span>
+              <h2 id="auth-form-title">欢迎回来</h2>
+              <p id="auth-form-copy">输入账号信息，继续你的会话与执行历史。</p>
+            </div>
+            <form id="auth-form" class="auth-form">
+              <label class="auth-field">
+                <span>用户名</span>
+                <input type="text" id="username-input" aria-label="用户名" placeholder="例如 zheng-admin" autocomplete="username">
+              </label>
+              <label class="auth-field">
+                <span>密码</span>
+                <input type="password" id="password-input" aria-label="密码" placeholder="至少 8 位" autocomplete="current-password">
+              </label>
+              <button id="connect-btn" type="submit">进入聊天工作台</button>
+            </form>
+            <div class="auth-form-footer">
+              <button id="auth-mode-toggle" class="text-button" type="button">没有账号？立即注册</button>
+            </div>
+          </section>
+          <aside class="auth-legacy-panel">
+            <div class="auth-legacy-copy">
+              <span class="eyebrow">Legacy access</span>
+              <h3>已有 JWT？</h3>
+              <p>保留旧版令牌模式，便于脚本、测试和已有工作流继续使用。</p>
+            </div>
+            <input type="password" id="jwt-input" aria-label="JWT 令牌" placeholder="请输入或粘贴 JWT 令牌">
+            <button id="jwt-connect-btn" class="ghost-button" type="button">使用 JWT 进入</button>
+          </aside>
+        </div>
       </div>
       <div id="auth-status-connected" data-test="auth-status-connected" style="display:none">
         <span class="status-dot green"></span> 已连接

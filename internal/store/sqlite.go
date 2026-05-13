@@ -57,9 +57,17 @@ CREATE TABLE IF NOT EXISTS memory_entries (
   updated_at DATETIME NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at DATETIME NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_steps_session ON steps(session_id);
 CREATE INDEX IF NOT EXISTS idx_memory_session ON memory_entries(session_id);
 CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_entries(key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username);
 `
 
 func openSQLite(dbPath string) (*sql.DB, error) {

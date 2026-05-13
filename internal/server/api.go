@@ -30,9 +30,11 @@ type EngineFactory func(events *runtime.EventChannel, task domain.Task, maxSteps
 type API struct {
 	SessionStore   *store.SQLiteSessionStore
 	MemoryStore    *store.SQLiteMemoryStore
+	UserStore      *store.SQLiteUserStore
 	Manager        *runtime.SessionManager
 	Builder        *runtimebuilder.Builder
 	Service        *service.ChatService
+	AuthService    *service.AuthService
 	Config         config.Config
 	JWTSecret      string
 	Clock          func() time.Time
@@ -198,21 +200,6 @@ func (a *API) Recoverer(next http.Handler) http.Handler {
 				a.writeStructuredError(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 			}
 		}()
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (a *API) AuthMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, err := bearerToken(r.Header.Get("Authorization"))
-		if err != nil {
-			a.writeStructuredError(w, r, http.StatusUnauthorized, "unauthorized", err.Error())
-			return
-		}
-		if err := validateJWT(token, a.JWTSecret, a.now()); err != nil {
-			a.writeStructuredError(w, r, http.StatusUnauthorized, "unauthorized", err.Error())
-			return
-		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -626,58 +613,64 @@ func bearerToken(header string) (string, error) {
 	return strings.TrimSpace(parts[1]), nil
 }
 
-func validateJWT(token, secret string, now time.Time) error {
+type jwtClaims struct {
+	Subject   string
+	IssuedAt  time.Time
+	ExpiresAt time.Time
+}
+
+func validateJWT(token, secret string, now time.Time) (jwtClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	signingInput := parts[0] + "." + parts[1]
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(signingInput))
 	expected := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	if !hmac.Equal([]byte(expected), []byte(parts[2])) {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	var headerClaims map[string]any
 	if err := json.Unmarshal(headerBytes, &headerClaims); err != nil {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	if alg, _ := headerClaims["alg"].(string); alg != "HS256" {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	sub, _ := claims["sub"].(string)
 	if strings.TrimSpace(sub) == "" {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	iat, ok := numericClaim(claims, "iat")
 	if !ok {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	exp, ok := numericClaim(claims, "exp")
 	if !ok {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
 	issuedAt := time.Unix(iat, 0)
 	expiresAt := time.Unix(exp, 0)
 	if !expiresAt.After(now) {
-		return errors.New("expired bearer token")
+		return jwtClaims{}, errors.New("expired bearer token")
 	}
 	if expiresAt.Sub(issuedAt) > 24*time.Hour {
-		return errors.New("invalid bearer token")
+		return jwtClaims{}, errors.New("invalid bearer token")
 	}
-	return nil
+	return jwtClaims{Subject: strings.TrimSpace(sub), IssuedAt: issuedAt, ExpiresAt: expiresAt}, nil
 }
 
 func numericClaim(claims map[string]any, key string) (int64, bool) {

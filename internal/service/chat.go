@@ -250,17 +250,29 @@ func (s *ChatService) SubmitTurn(ctx context.Context, submission domain.TurnSubm
 	}, nil
 }
 
-func (s *ChatService) SubmitReply(ctx context.Context, conversationID, message string) (*ChatResult, error) {
+func (s *ChatService) SubmitReply(ctx context.Context, conversationIDOrSessionID, message string) (*ChatResult, error) {
 	if s == nil {
 		return nil, errors.New("chat service is nil")
 	}
-	conversationID = strings.TrimSpace(conversationID)
-	if conversationID == "" {
-		return nil, &ValidationError{Message: "conversation_id is required"}
+	id := strings.TrimSpace(conversationIDOrSessionID)
+	if id == "" {
+		return nil, &ValidationError{Message: "conversation id is required"}
 	}
 	content := strings.TrimSpace(message)
 	if content == "" {
 		return nil, &ValidationError{Message: "input content is required"}
+	}
+
+	// 首先尝试获取transcript，这会处理session_id -> conversation_id的转换
+	// GetTranscript 已经在内部处理了所有回退逻辑
+	transcript, err := s.GetTranscript(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("获取对话历史失败: %w", err)
+	}
+	
+	conversationID := transcript.Chat.ConversationID
+	if conversationID == "" {
+		conversationID = id
 	}
 
 	records, err := s.sessionStore.ListConversationSessions(ctx, conversationID)
@@ -268,7 +280,7 @@ func (s *ChatService) SubmitReply(ctx context.Context, conversationID, message s
 		return nil, mapStoreLookupError("conversation", conversationID, err)
 	}
 	if len(records) == 0 {
-		return nil, &ValidationError{Message: "conversation not found"}
+		return nil, &ValidationError{Message: "conversation not found: " + conversationID}
 	}
 	// Find the last terminal (completed/failed) session to chain from.
 	// If the very latest session is still running, we chain from the previous
@@ -284,12 +296,16 @@ func (s *ChatService) SubmitReply(ctx context.Context, conversationID, message s
 		return nil, &ConflictError{Message: "conversation is already running"}
 	}
 	parent := records[parentIdx]
+	taskDescription := content
+	if historyContext := buildConversationContext(transcript.Chat.Messages); historyContext != "" {
+		taskDescription = historyContext + "\n\nCurrent user message:\n" + content
+	}
 
 	now := s.Now().UTC()
 	sessionID := fmt.Sprintf("session-%d", now.UnixNano())
 	task := domain.Task{
 		ID:          sessionID,
-		Description: content,
+		Description: taskDescription,
 		Goal:        content,
 		Category:    parent.Task.CategoryOrDefault().Normalize(),
 		CreatedAt:   now,
@@ -394,6 +410,7 @@ func (s *ChatService) GetTranscript(ctx context.Context, conversationID string) 
 	}
 	records, err := s.sessionStore.ListConversationSessions(ctx, conversationID)
 	if err != nil {
+		// 数据库查询失败，尝试直接查询session
 		inspected, inspectErr := s.sessionStore.InspectSession(ctx, conversationID)
 		if inspectErr != nil {
 			return nil, mapStoreLookupError("conversation", conversationID, err)
@@ -402,6 +419,19 @@ func (s *ChatService) GetTranscript(ctx context.Context, conversationID string) 
 		chat := domain.BuildChatTranscript(conversation)
 		return &Transcript{Conversation: conversation, Chat: chat, Inspect: inspected}, nil
 	}
+	
+	// 如果没有找到记录，尝试用InspectSession作为回退
+	if len(records) == 0 {
+		inspected, inspectErr := s.sessionStore.InspectSession(ctx, conversationID)
+		if inspectErr == nil {
+			conversation := buildConversation(inspected)
+			chat := domain.BuildChatTranscript(conversation)
+			return &Transcript{Conversation: conversation, Chat: chat, Inspect: inspected}, nil
+		}
+		// 如果session不存在，返回not found
+		return nil, &ValidationError{Message: "conversation not found: " + conversationID}
+	}
+	
 	conversation, inspected, err := s.buildTranscriptFromRecords(ctx, conversationID, records)
 	if err != nil {
 		return nil, err
@@ -606,7 +636,7 @@ func (s *ChatService) validateProvenanceForResume(p *domain.Provenance) []string
 
 func buildConversation(inspected store.InspectState) domain.Conversation {
 	messages := make([]domain.ChatMessage, 0, len(inspected.Steps)*2+1)
-	if description := strings.TrimSpace(inspected.Task.Description); description != "" {
+	if description := strings.TrimSpace(firstNonEmpty(inspected.Task.Goal, inspected.Task.Description)); description != "" {
 		messages = append(messages, domain.ChatMessage{
 			ID:        inspected.Session.ID + "-user-0",
 			TurnIndex: 0,
@@ -680,6 +710,42 @@ func conversationStatusForSession(status domain.SessionStatus) domain.Conversati
 	default:
 		return domain.ConversationStatusFailed
 	}
+}
+
+func buildConversationContext(messages []domain.ChatMessage) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Conversation history:\n")
+	wroteMessage := false
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		role := ""
+		switch message.Role {
+		case domain.ChatRoleUser:
+			role = "User"
+		case domain.ChatRoleAssistant:
+			role = "Assistant"
+		default:
+			continue
+		}
+		if wroteMessage {
+			builder.WriteString("\n")
+		}
+		builder.WriteString(role)
+		builder.WriteString(":\n")
+		builder.WriteString(content)
+		builder.WriteString("\n")
+		wroteMessage = true
+	}
+	if !wroteMessage {
+		return ""
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func isSupportedVerifyMode(value string) bool {

@@ -43,3 +43,5 @@
 - No fabricated evidence references: all referenced .sisyphus/evidence/task-{1-7}-* files must actually exist on disk
 - The validation-matrix.md has a long-established pattern of a header block with Last Updated, Phase, Status, and per-version status lines
 
+
+- SubmitReply should resolve transcripts first so either conversation_id or root session_id can continue the same chat, and prior turns should be reconstructed from transcript messages rather than raw task descriptions alone.

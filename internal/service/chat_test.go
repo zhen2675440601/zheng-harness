@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,8 +134,14 @@ func TestSubmitReplyCreatesFollowupSession(t *testing.T) {
 				return domain.Session{ID: task.ID, TaskID: task.ID, Status: domain.SessionStatusSuccess, CreatedAt: now, UpdatedAt: now}, domain.Plan{ID: "plan-" + task.ID, TaskID: task.ID, Summary: task.Description, CreatedAt: now}, nil, nil
 			}), nil
 		case 2:
-			if task.Description != "follow-up" {
-				t.Fatalf("follow-up task.Description = %q, want follow-up", task.Description)
+			if !strings.Contains(task.Description, "Conversation history:\nUser:\nfirst message") {
+				t.Fatalf("follow-up task.Description missing history context: %q", task.Description)
+			}
+			if !strings.Contains(task.Description, "Current user message:\nfollow-up") {
+				t.Fatalf("follow-up task.Description missing current message: %q", task.Description)
+			}
+			if task.Goal != "follow-up" {
+				t.Fatalf("follow-up task.Goal = %q, want follow-up", task.Goal)
 			}
 			return blockingRunner{done: secondBlock}, nil
 		default:
@@ -208,6 +215,51 @@ func TestSubmitReplyReturnsNotFoundForMissingConversation(t *testing.T) {
 	if !errors.As(err, &notFoundErr) || notFoundErr.Kind != "conversation" || notFoundErr.ID != "missing-conversation" {
 		t.Fatalf("SubmitReply() error = %v, want conversation not found", err)
 	}
+}
+
+func TestSubmitReplyAcceptsSessionIDForConversationLookup(t *testing.T) {
+	t.Parallel()
+	svc, manager, _ := newTestChatService(t)
+	firstBlock := make(chan struct{})
+	secondBlock := make(chan struct{})
+	callCount := 0
+	svc.WithEngineFactory(func(_ *runtime.EventChannel, task domain.Task, _ int, _ string) (runtime.SessionRunner, error) {
+		callCount++
+		switch callCount {
+		case 1:
+			return runnerFunc(func(ctx context.Context, task domain.Task) (domain.Session, domain.Plan, []domain.Step, error) {
+				select {
+				case <-ctx.Done():
+					return domain.Session{}, domain.Plan{}, nil, ctx.Err()
+				case <-firstBlock:
+				}
+				now := time.Now().UTC()
+				return domain.Session{ID: task.ID, TaskID: task.ID, Status: domain.SessionStatusSuccess, CreatedAt: now, UpdatedAt: now}, domain.Plan{ID: "plan-" + task.ID, TaskID: task.ID, Summary: task.Description, CreatedAt: now}, nil, nil
+			}), nil
+		case 2:
+			return blockingRunner{done: secondBlock}, nil
+		default:
+			t.Fatalf("unexpected engine start count %d", callCount)
+			return blockingRunner{done: secondBlock}, nil
+		}
+	})
+
+	start, err := svc.StartChat(context.Background(), StartChatRequest{Message: "first message", TaskType: "coding"})
+	if err != nil {
+		t.Fatalf("StartChat() error = %v", err)
+	}
+	close(firstBlock)
+	time.Sleep(50 * time.Millisecond)
+
+	reply, err := svc.SubmitReply(context.Background(), start.SessionID, "follow-up")
+	if err != nil {
+		t.Fatalf("SubmitReply() error = %v", err)
+	}
+	if reply.ConversationID != start.ConversationID {
+		t.Fatalf("reply.ConversationID = %q, want %q", reply.ConversationID, start.ConversationID)
+	}
+	close(secondBlock)
+	_ = manager.Shutdown(context.Background())
 }
 
 func TestResumeConversationRejectsTerminalSession(t *testing.T) {

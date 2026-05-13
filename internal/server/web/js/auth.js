@@ -40,6 +40,13 @@
     }
   }
 
+  function parseErrorPayload(payload, fallback) {
+    if (payload && payload.error && payload.error.message) {
+      return payload.error.message;
+    }
+    return fallback;
+  }
+
   function mapVerificationError(status, message) {
     var normalized = String(message || '').toLowerCase();
     if (status === 401) {
@@ -58,6 +65,20 @@
       return 'Invalid token';
     }
     return message || 'Token verification failed';
+  }
+
+  async function requestJSON(path, options) {
+    var response = await fetch(path, Object.assign({}, options || {}));
+    var payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+    if (!response.ok) {
+      throw new Error(parseErrorPayload(payload, response.status + ' ' + response.statusText));
+    }
+    return payload;
   }
 
   async function verifyToken(token) {
@@ -90,9 +111,7 @@
       var message = '';
       try {
         var payload = await response.json();
-        if (payload && payload.error && payload.error.message) {
-          message = payload.error.message;
-        }
+        message = parseErrorPayload(payload, '');
       } catch (error) {
         message = '';
       }
@@ -113,6 +132,22 @@
     }
   }
 
+  async function login(username, password) {
+    return requestJSON('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, password: password }),
+    });
+  }
+
+  async function register(username, password) {
+    return requestJSON('/api/v1/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, password: password }),
+    });
+  }
+
   function isConnected() {
     return getToken().length > 0;
   }
@@ -122,15 +157,18 @@
     setToken: setToken,
     clearToken: clearToken,
     verifyToken: verifyToken,
+    login: login,
+    register: register,
     isConnected: isConnected,
   };
 
-  // Expose for E2E testing
   window.__zhengAuth = {
     getToken: getToken,
     setToken: setToken,
     clearToken: clearToken,
     verifyToken: verifyToken,
+    login: login,
+    register: register,
     isConnected: isConnected,
   };
 })();

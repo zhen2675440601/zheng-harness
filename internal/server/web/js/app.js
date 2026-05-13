@@ -35,8 +35,16 @@
     authError: byId('auth-error'),
     authStatusConnected: byId('auth-status-connected'),
     mainContent: byId('main-content'),
+    authForm: byId('auth-form'),
+    usernameInput: byId('username-input'),
+    passwordInput: byId('password-input'),
+    authModeToggle: byId('auth-mode-toggle'),
+    authModeBadge: byId('auth-mode-badge'),
+    authFormTitle: byId('auth-form-title'),
+    authFormCopy: byId('auth-form-copy'),
     jwtInput: byId('jwt-input'),
     connectBtn: byId('connect-btn'),
+    jwtConnectBtn: byId('jwt-connect-btn'),
     disconnectBtn: byId('disconnect-btn'),
     newChatBtn: byId('new-chat-btn'),
     historyToggle: byId('history-toggle'),
@@ -84,6 +92,31 @@
   function setHTML(element, html) {
     if (element) {
       element.innerHTML = html;
+    }
+  }
+
+  var authMode = 'login';
+
+  function syncAuthModeUI() {
+    if (els.authModeBadge) {
+      els.authModeBadge.textContent = authMode === 'register' ? '注册模式' : '登录模式';
+    }
+    if (els.authFormTitle) {
+      els.authFormTitle.textContent = authMode === 'register' ? '创建新账户' : '欢迎回来';
+    }
+    if (els.authFormCopy) {
+      els.authFormCopy.textContent = authMode === 'register'
+        ? '注册后会自动签发 JWT 并进入工作台。'
+        : '输入账号信息，继续你的会话与执行历史。';
+    }
+    if (els.connectBtn) {
+      els.connectBtn.textContent = authMode === 'register' ? '注册并进入工作台' : '进入聊天工作台';
+    }
+    if (els.authModeToggle) {
+      els.authModeToggle.textContent = authMode === 'register' ? '已有账号？返回登录' : '没有账号？立即注册';
+    }
+    if (els.passwordInput) {
+      els.passwordInput.autocomplete = authMode === 'register' ? 'new-password' : 'current-password';
     }
   }
 
@@ -273,8 +306,18 @@
   }
 
   function getErrorMessage(error, fallbackMessage) {
-    var message = error && error.message ? String(error.message).trim() : '';
-    return message || fallbackMessage;
+    if (!error) {
+      return fallbackMessage || '发生未知错误';
+    }
+    var message = error.message ? String(error.message).trim() : '';
+    if (message) {
+      return message;
+    }
+    // 如果error是响应对象，尝试获取更多信息
+    if (error.response) {
+      return '请求失败 (状态: ' + error.response.status + ')';
+    }
+    return fallbackMessage || '发生未知错误';
   }
 
   function deriveSessionIdFromStreamURL(streamURL) {
@@ -634,6 +677,11 @@
       onComplete: function () {
         setConnectionState('green', '已连接');
         setStreamStatus('已完成');
+        // 流完成后更新会话状态，允许发送新消息
+        if (state.currentStatus === 'running') {
+          state.currentStatus = 'ready';
+        }
+        renderHeader();
         finalizeStream();
       },
       onError: function (error) {
@@ -666,6 +714,13 @@
     if (isTaskSubmitting) {
       return;
     }
+    
+    // 检查会话是否正在运行
+    if (state.currentStatus === 'running') {
+      showComposerValidationError('会话正在处理中，请等待完成后再发送新消息。');
+      return;
+    }
+    
     clearComposerValidationError();
     clearComposerError();
 
@@ -773,6 +828,7 @@
     setVisible(els.authScreen, true, 'flex');
     setVisible(els.authStatusConnected, false);
     resetWorkspace();
+    syncAuthModeUI();
   }
 
   async function connectWithToken(token) {
@@ -797,6 +853,34 @@
       auth.clearToken();
       showAuthScreen();
       showAuthError(getErrorMessage(error, '连接失败'));
+    } finally {
+      isAuthBusy = false;
+    }
+  }
+
+  async function connectWithCredentials(username, password) {
+    if (isAuthBusy) {
+      return;
+    }
+    isAuthBusy = true;
+    clearAuthError();
+    try {
+      var action = authMode === 'register' ? auth.register : auth.login;
+      var result = await action(username, password);
+      if (!result || !result.token) {
+        throw new Error('Authentication succeeded but no token was returned');
+      }
+      auth.setToken(result.token);
+      showAuthenticatedShell();
+      if (!window.location.hash || window.location.hash === '#/' || window.location.hash === '#') {
+        window.location.hash = '#/chat';
+      }
+      syncRouteToState();
+      loadHistory();
+    } catch (error) {
+      auth.clearToken();
+      showAuthScreen();
+      showAuthError(getErrorMessage(error, authMode === 'register' ? '注册失败' : '登录失败'));
     } finally {
       isAuthBusy = false;
     }
@@ -832,8 +916,38 @@
   }
 
   function bindEvents() {
+    syncAuthModeUI();
+
     if (els.connectBtn) {
-      els.connectBtn.addEventListener('click', function () {
+      els.connectBtn.addEventListener('click', function (event) {
+        event.preventDefault();
+        connectWithCredentials(
+          els.usernameInput ? els.usernameInput.value : '',
+          els.passwordInput ? els.passwordInput.value : ''
+        );
+      });
+    }
+
+    if (els.authForm) {
+      els.authForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        connectWithCredentials(
+          els.usernameInput ? els.usernameInput.value : '',
+          els.passwordInput ? els.passwordInput.value : ''
+        );
+      });
+    }
+
+    if (els.authModeToggle) {
+      els.authModeToggle.addEventListener('click', function () {
+        authMode = authMode === 'register' ? 'login' : 'register';
+        clearAuthError();
+        syncAuthModeUI();
+      });
+    }
+
+    if (els.jwtConnectBtn) {
+      els.jwtConnectBtn.addEventListener('click', function () {
         connectWithToken(els.jwtInput ? els.jwtInput.value : '');
       });
     }

@@ -171,13 +171,18 @@ func (a serverApp) run(ctx context.Context, args []string) error {
 	apiConfig.Server.WebUI.Enabled = *webUIEnabled
 	apiConfig.Server.WebUI.StaticDir = strings.TrimSpace(*webUIDir)
 
-	sessionStore, memoryStore, cleanup, err := a.openRuntimeDeps(*dbPath, runtimebuilder.StoreOptions{EnableWAL: serverCfg.EnableWAL})
+sessionStore, memoryStore, userStore, cleanup, err := a.openRuntimeDeps(*dbPath, runtimebuilder.StoreOptions{EnableWAL: serverCfg.EnableWAL})
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 	if err := a.verifyWAL(*dbPath, serverCfg); err != nil {
 		return err
+	}
+
+	// 创建默认管理员账号
+	if err := userStore.EnsureDefaultAdmin(); err != nil {
+		fmt.Fprintf(os.Stderr, "警告: 创建默认管理员账号失败: %v\n", err)
 	}
 	_ = memoryStore
 
@@ -188,6 +193,7 @@ func (a serverApp) run(ctx context.Context, args []string) error {
 	api := &serverapi.API{
 		SessionStore: sessionStore,
 		MemoryStore:  memoryStore,
+		UserStore:    userStore,
 		Manager:      manager,
 		Builder:      a.builder,
 		Config:       apiConfig,
@@ -253,6 +259,8 @@ func registerRoutesWithWebFS(router chi.Router, api *serverapi.API, webAssets fs
 		serverapi.WriteJSONForServer(w, http.StatusOK, map[string]any{"status": "ok", "dev_token": token})
 	})
 	router.Route("/api/v1", func(r chi.Router) {
+		r.Post("/auth/register", api.JSON(api.HandleRegister))
+		r.Post("/auth/login", api.JSON(api.HandleLogin))
 		r.Use(api.AuthMiddleware)
 		r.Post("/run", api.JSON(api.HandleRun))
 		r.Post("/resume", api.JSON(api.HandleResume))
@@ -271,21 +279,28 @@ func registerRoutesWithWebFS(router chi.Router, api *serverapi.API, webAssets fs
 	serverapi.RegisterWebRoutesWithFS(router, api, webAssets)
 }
 
-func (a serverApp) openRuntimeDeps(dbPath string, opts runtimebuilder.StoreOptions) (*store.SQLiteSessionStore, *store.SQLiteMemoryStore, func(), error) {
+func (a serverApp) openRuntimeDeps(dbPath string, opts runtimebuilder.StoreOptions) (*store.SQLiteSessionStore, *store.SQLiteMemoryStore, *store.SQLiteUserStore, func(), error) {
 	sessionStore, err := a.newSession(dbPath, opts)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	memoryStore, err := a.newMemory(dbPath, opts)
 	if err != nil {
 		_ = sessionStore.Close()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
+	}
+	userStore, err := store.NewSQLiteUserStoreWithOptions(dbPath, store.SQLiteOptions{EnableWAL: opts.EnableWAL})
+	if err != nil {
+		_ = memoryStore.Close()
+		_ = sessionStore.Close()
+		return nil, nil, nil, nil, err
 	}
 	cleanup := func() {
+		_ = userStore.Close()
 		_ = memoryStore.Close()
 		_ = sessionStore.Close()
 	}
-	return sessionStore, memoryStore, cleanup, nil
+	return sessionStore, memoryStore, userStore, cleanup, nil
 }
 
 func (a serverApp) resolveJWTSecret(cfg runtimebuilder.ServerConfig) (string, error) {
