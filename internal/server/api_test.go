@@ -27,6 +27,18 @@ import (
 	"zheng-harness/internal/store"
 )
 
+type fakeToolPluginReloader struct {
+	err      error
+	called   bool
+	lastName string
+}
+
+func (f *fakeToolPluginReloader) ReloadTool(name string) error {
+	f.called = true
+	f.lastName = name
+	return f.err
+}
+
 //go:embed testdata/web/index.html
 var testWebMountFS embed.FS
 
@@ -348,6 +360,81 @@ func TestChatReplyReturns409ForRunningConversation(t *testing.T) {
 	}
 	close(block)
 	_ = h.manager.Shutdown(context.Background())
+}
+
+func TestPluginReload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		reloadErr  error
+		wantStatus int
+		wantCode   string
+		wantMsg    string
+	}{
+		{
+			name:       "success",
+			wantStatus: http.StatusOK,
+			wantMsg:    "plugin reloaded",
+		},
+		{
+			name:       "not found",
+			reloadErr:  errors.New("plugin not found"),
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+			wantMsg:    "plugin not found",
+		},
+{
+			name:       "internal error",
+			reloadErr:  errors.New("reload failed"),
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "internal_error",
+			wantMsg:    "failed to reload plugin",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestAPIHarness(t)
+			fakeReloader := &fakeToolPluginReloader{err: tc.reloadErr}
+			h.api.ToolPluginReloader = fakeReloader
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/demo/reload", nil)
+			req.Header.Set("Authorization", "Bearer "+h.jwt)
+			h.router.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("POST /api/v1/plugins/{name}/reload status = %d, want %d body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if !fakeReloader.called {
+				t.Fatal("ReloadTool() was not called")
+			}
+			if fakeReloader.lastName != "demo" {
+				t.Fatalf("ReloadTool() name = %q, want demo", fakeReloader.lastName)
+			}
+
+			if tc.wantStatus == http.StatusOK {
+				var payload map[string]string
+				if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+					t.Fatalf("unmarshal success payload: %v", err)
+				}
+				if payload["message"] != tc.wantMsg {
+					t.Fatalf("success message = %q, want %q", payload["message"], tc.wantMsg)
+				}
+				return
+			}
+
+			var payload errorEnvelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("unmarshal error payload: %v", err)
+			}
+			if payload.Error.Code != tc.wantCode || payload.Error.Message != tc.wantMsg {
+				t.Fatalf("error payload = %#v, want code=%q message=%q", payload, tc.wantCode, tc.wantMsg)
+			}
+		})
+	}
 }
 
 func TestSessionIDContractUsesSessionIDFieldOnly(t *testing.T) {
@@ -1457,6 +1544,7 @@ func newTestAPIHarnessWithOptions(t *testing.T, opts testAPIHarnessOptions) test
 		r.Post("/chat/{conversation_id}/reply", api.JSON(api.HandleChatReply))
 		r.Get("/chat/{conversation_id}/transcript", api.JSON(api.HandleChatTranscript))
 		r.Get("/chat/conversations", api.JSON(api.HandleChatList))
+		r.Post("/plugins/{name}/reload", api.JSON(api.HandlePluginReload))
 		r.Get("/sessions", api.JSON(api.HandleListSessions))
 		r.Get("/sessions/{id}/inspect", api.JSON(api.HandleInspect))
 		r.Get("/sessions/{id}/stream", api.JSON(api.HandleStream))

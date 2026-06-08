@@ -27,6 +27,10 @@ import (
 
 type EngineFactory func(events *runtime.EventChannel, task domain.Task, maxSteps int, verifyMode string) (runtime.SessionRunner, error)
 
+type ToolPluginReloader interface {
+	ReloadTool(name string) error
+}
+
 type API struct {
 	SessionStore   *store.SQLiteSessionStore
 	MemoryStore    *store.SQLiteMemoryStore
@@ -37,6 +41,7 @@ type API struct {
 	AuthService    *service.AuthService
 	Config         config.Config
 	JWTSecret      string
+	ToolPluginReloader ToolPluginReloader
 	Clock          func() time.Time
 	EngineFactory  EngineFactory
 	RetryAfterSecs int
@@ -323,6 +328,24 @@ func (a *API) HandleChatList(w http.ResponseWriter, r *http.Request) error {
 		"page_size":     result.PageSize,
 		"total":         result.Total,
 	})
+	return nil
+}
+
+func (a *API) HandlePluginReload(w http.ResponseWriter, r *http.Request) error {
+	name := strings.TrimSpace(chi.URLParam(r, "name"))
+	if name == "" {
+		return &apiError{status: http.StatusBadRequest, code: "invalid_request", message: "plugin name is required"}
+	}
+if a.ToolPluginReloader == nil {
+		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: "plugin reload not configured", err: errors.New("tool plugin reloader is not configured")}
+	}
+	if err := a.ToolPluginReloader.ReloadTool(name); err != nil {
+		if strings.Contains(err.Error(), "plugin not found") {
+			return &apiError{status: http.StatusNotFound, code: "not_found", message: "plugin not found", err: err}
+		}
+		return &apiError{status: http.StatusInternalServerError, code: "internal_error", message: "failed to reload plugin", err: err}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "plugin reloaded"})
 	return nil
 }
 

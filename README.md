@@ -7,16 +7,17 @@
 **v3** 新增 **三家族插件系统 (provider/verifier/agent-strategy)、fail-closed 运行时、来源可追溯**。
 **v4** 新增 **HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider**。
 **v5** 新增 **同源内嵌 Web UI、Session 列表 API、浏览器 JWT Bootstrap、Dashboard 与 Live SSE 观看**。
-**v6** 新增 **Chat-First 对话式 Web UI、六层 Harness 架构对齐、聊天 API 端点**。
-**v7** 新增 **内部可靠性强化：服务层校验、会话生命周期硬化工、SSE 错误路径保护、统一 API 错误包络、最小诊断、浏览器回归清单**。
+**v6** 新增 **Chat-First 对话式 Web UI、六层 Harness 架构对齐、聊天 API 端点**。  
+**v7** 新增 **内部可靠性强化：服务层校验、会话生命周期硬化工、SSE 错误路径保护、统一 API 错误包络、最小诊断、浏览器回归清单**。  
+**v8** 新增 **插件生命周期管理：热重载、调用前健康检查、自动恢复（有限重试）、语义版本兼容性**。
 
 **定位**: 通用任务执行引擎，支持 coding、research、file workflow 等多种任务类型。
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成 | v6 ✅ 完成 | v7 ✅ 完成**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成 | v6 ✅ 完成 | v7 ✅ 完成 | v8 🔄 进行中**
 
-核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证；**v3 三家族插件系统、fail-closed 语义、fail-closed 运行时已验证**；**v4 HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider 已验证**；**v5 Web UI 同源内嵌、Session 列表 API、浏览器 JWT Bootstrap、Dashboard/Live SSE/Inspect 视图、E2E 浏览器自动化测试已验证**；**v6 聊天优先 Web UI、六层架构对齐、聊天 API 端点已验证**；**v7 内部可靠性发布：服务层校验、会话生命周期硬化工、SSE 错误保护、统一 API 错误包络、最小诊断、浏览器回归清单已验证**。详细进度请见 [PROGRESS.md](PROGRESS.md)。
+核心任务 T1-T11 已全部完成，Phase 3 通用任务协议任务 (T1-T12) 已完成，Phase 4 闭环验证已完成；v2 (Wave 2) streaming runtime、新工具、插件系统、多 Agent 编排已全部完成并验证；**v3 三家族插件系统、fail-closed 语义、fail-closed 运行时已验证**；**v4 HTTP API 服务器、SSE 流式输出、会话并发执行、OpenAI/Anthropic 真实 Provider 已验证**；**v5 Web UI 同源内嵌、Session 列表 API、浏览器 JWT Bootstrap、Dashboard/Live SSE/Inspect 视图、E2E 浏览器自动化测试已验证**；**v6 聊天优先 Web UI、六层架构对齐、聊天 API 端点已验证**；**v7 内部可靠性发布：服务层校验、会话生命周期硬化工、SSE 错误保护、统一 API 错误包络、最小诊断、浏览器回归清单已验证**；**v8 插件生命周期管理：热重载、健康检查、自动恢复、语义版本兼容性 🔄 进行中**。详细进度请见 [PROGRESS.md](PROGRESS.md)。
 
 验证状态见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
@@ -280,6 +281,43 @@ v7 是 **内部可靠性发布**，不扩展新能力，专注于将 v6 的 chat
 - **NO 长期记忆升级**: memory 层保持 v6 范围
 - **NO 插件生态扩展**: 不新增插件类型或市场机制
 - **NO 事件回放/重连历史**: SSE 重连仅接收未来事件，v7 不实现回放
+
+## v8 新增特性 (Plugin Lifecycle Management)
+
+v8 专注于 Tool 插件的运行时可靠性，不涉及 Provider/Verifier/AgentStrategy 插件家族。
+
+### 1. 热重载 (Hard Reload)
+
+- **`PluginManager.ReloadTool(name)`**: 关闭现有插件实例，重新发现并加载插件二进制，重新执行 JSON-RPC 握手
+- **API 端点**: `POST /api/v1/plugins/{name}/reload` — HTTP 触发重载
+- **CLI 命令**: `zheng-agent tool reload <plugin-name> [--plugin-dir ./plugins]`
+- **安全**: 仅手动触发，不自动重载；不影响现有插件实例直至显式触发
+
+### 2. 调用前健康检查
+
+- 每次 `ExternalPluginTool.Execute()` 调用前检查插件进程存活状态
+- 使用可配置超时（默认 5s）
+- 进程不响应时返回 `HealthCheckError`
+
+### 3. 自动恢复 (有限重试)
+
+- 插件崩溃后自动重启一次
+- 连续第二次失败后标记插件为 "unavailable"
+- 成功执行后重置失败计数
+- 避免无限循环或恢复风暴
+
+### 4. 语义版本兼容性
+
+- 首次加载时验证插件合同版本的主版本一致性
+- 主版本一致（如 1.x 兼容 1.y）则接受
+- 主版本不一致（如期望 1.x 但收到 2.x）则拒绝
+
+### v8 非目标
+
+- **NO 扩展到其他插件家族**: Provider/Verifier/AgentStrategy 保持不变
+- **NO 自动定期重载**: 仅手动触发
+- **NO 复杂状态迁移或增量重载**: 仅硬重载
+- **NO 插件市场或分发系统**
 
 ## 快速开始
 

@@ -8,6 +8,76 @@ import (
 	"zheng-harness/internal/domain"
 )
 
+func TestSemanticVersionParseVersion(t *testing.T) {
+	t.Parallel()
+
+	major, minor, patch, err := ParseVersion("1.2.3")
+	if err != nil {
+		t.Fatalf("ParseVersion() error = %v", err)
+	}
+	if major != 1 || minor != 2 || patch != 3 {
+		t.Fatalf("ParseVersion() = (%d, %d, %d), want (1, 2, 3)", major, minor, patch)
+	}
+}
+
+func TestSemanticVersionCheckVersionCompatSameMajor(t *testing.T) {
+	t.Parallel()
+
+	compatible, err := CheckVersionCompat("1.2.3", "1.3.0")
+	if err != nil {
+		t.Fatalf("CheckVersionCompat() error = %v", err)
+	}
+	if !compatible {
+		t.Fatal("CheckVersionCompat() = false, want true")
+	}
+}
+
+func TestSemanticVersionCheckVersionCompatDifferentMajor(t *testing.T) {
+	t.Parallel()
+
+	compatible, err := CheckVersionCompat("1.2.3", "2.0.0")
+	if err != nil {
+		t.Fatalf("CheckVersionCompat() error = %v", err)
+	}
+	if compatible {
+		t.Fatal("CheckVersionCompat() = true, want false")
+	}
+}
+
+func TestSemanticVersionValidateContractLegacyVersionStillWorks(t *testing.T) {
+	t.Parallel()
+
+	tool := stubPluginTool{version: "1.0.0"}
+
+	if err := ValidateContract(tool); err != nil {
+		t.Fatalf("ValidateContract() error = %v", err)
+	}
+}
+
+func TestSemanticVersionValidateContractSameMajorCompatible(t *testing.T) {
+	t.Parallel()
+
+	tool := stubPluginTool{version: "1.2.3"}
+
+	if err := ValidateContract(tool); err != nil {
+		t.Fatalf("ValidateContract() error = %v", err)
+	}
+}
+
+func TestSemanticVersionValidateContractDifferentMajorMismatch(t *testing.T) {
+	t.Parallel()
+
+	tool := stubPluginTool{version: "2.0.0"}
+
+	err := ValidateContract(tool)
+	if err == nil {
+		t.Fatal("expected version mismatch error")
+	}
+	if !errors.Is(err, ErrContractVersionMismatch) {
+		t.Fatalf("expected ErrContractVersionMismatch, got %v", err)
+	}
+}
+
 func TestContractVersionMismatch(t *testing.T) {
 	t.Parallel()
 

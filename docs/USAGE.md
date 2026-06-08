@@ -12,6 +12,7 @@
 zheng-agent run --task "inspect repository and propose next step"
 zheng-agent resume --session <id>
 zheng-agent inspect --session <id>
+zheng-agent tool reload <plugin-name> [--plugin-dir ./plugins]
 
 # streaming mode
 zheng-agent run --task "inspect repository and propose next step" --stream
@@ -217,6 +218,38 @@ go run ./cmd/agent inspect --session session-1710000000000000000 --json
 对于 streaming session，`inspect` 仍然只展示持久化后的最终 plan/step/session 结果，不展示中间 token delta 事件。
 
 即使原始插件文件已经缺失，`inspect` 仍然可以读取并展示历史中的 provenance；它不依赖实时插件加载。
+
+## `zheng-agent tool reload <plugin-name>`
+
+热重载一个 Tool 插件。插件管理器会关闭现有插件实例，重新发现并加载插件二进制，然后重新执行 JSON-RPC 握手。
+
+### 基本示例
+
+```bash
+go run ./cmd/agent tool reload my-plugin
+```
+
+### 指定插件目录
+
+```bash
+go run ./cmd/agent tool reload my-plugin --plugin-dir /path/to/plugins
+```
+
+### 参数说明
+
+- `<plugin-name>`：必填，要重载的 Tool 插件名称
+- `--plugin-dir`：可选，插件发现目录，默认 `./plugins`
+
+### 输出
+
+```text
+Plugin my-plugin reloaded successfully
+```
+
+**错误处理**:
+- 插件不存在时返回错误 `"Failed to reload plugin <name>: plugin not found"`
+- 插件管理器未配置时返回错误 `"plugin manager is not configured"`
+- 重载过程中插件二进制损坏或握手失败时返回对应错误
 
 ## 插件 provenance 与 fail-closed resume
 
@@ -630,6 +663,29 @@ data: {"session_id":"session-1710000000000000000","status":"success"}
 **错误状态**:
 - 401 Unauthorized: JWT 认证失败
 - 404 Not Found: 会话不存在
+
+#### `POST /api/v1/plugins/{name}/reload`
+
+热重载指定 Tool 插件（v8+）。
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/plugins/my-plugin/reload \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
+**响应** (200 OK):
+```json
+{
+  "message": "plugin reloaded"
+}
+```
+
+**错误状态**:
+- 401 Unauthorized: JWT 认证失败
+- 404 Not Found: 插件不存在
+- 500 Internal Server Error: 插件重载器未配置或重载失败
+
+---
 
 ### 会话并发限制
 

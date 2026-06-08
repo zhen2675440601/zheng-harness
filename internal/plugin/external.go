@@ -17,10 +17,32 @@ import (
 
 const defaultExternalPluginStartupTimeout = 5 * time.Second
 
+const defaultExternalPluginHealthCheckTimeout = 5 * time.Second
+
 var (
 	ErrExternalPluginClosed   = errors.New("external plugin closed")
 	ErrExternalPluginProtocol = errors.New("external plugin protocol error")
 )
+
+type HealthCheckError struct {
+	ToolName             string
+	Reason               string
+	Timeout              time.Duration
+	ConsecutiveFailures  int
+	Cause                error
+}
+
+func (e *HealthCheckError) Error() string {
+	message := fmt.Sprintf("external plugin health check failed for %q: %s", e.ToolName, e.Reason)
+	if e.ConsecutiveFailures > 0 {
+		message = fmt.Sprintf("%s (consecutive failures: %d)", message, e.ConsecutiveFailures)
+	}
+	return message
+}
+
+func (e *HealthCheckError) Unwrap() error {
+	return e.Cause
+}
 
 type externalInitializeParams struct {
 	ContractVersion string `json:"contract_version"`
@@ -62,7 +84,7 @@ func (l ExternalLoader) Load(ctx context.Context) (*ExternalPluginTool, error) {
 		return nil, fmt.Errorf("external plugin command must not be empty")
 	}
 
-	cmd := exec.CommandContext(context.Background(), l.Command, l.Args...)
+	cmd := exec.CommandContext(ctx, l.Command, l.Args...)
 	if l.Dir != "" {
 		cmd.Dir = l.Dir
 	}
@@ -132,6 +154,9 @@ type ExternalPluginTool struct {
 	stateMu sync.RWMutex
 	closed  bool
 
+	failureMu           sync.Mutex
+	consecutiveFailures int
+
 	exitMu  sync.RWMutex
 	exited  bool
 	waitErr error
@@ -166,6 +191,18 @@ func (t *ExternalPluginTool) ContractVersion() string {
 
 func (t *ExternalPluginTool) Execute(ctx context.Context, call domain.ToolCall) (domain.ToolResult, error) {
 	start := time.Now()
+
+	t.stateMu.RLock()
+	closed := t.closed
+	t.stateMu.RUnlock()
+	if closed {
+		return domain.ToolResult{ToolName: t.Name(), Duration: nonZeroDuration(time.Since(start))}, ErrExternalPluginClosed
+	}
+
+	if err := t.HealthCheck(0); err != nil {
+		return domain.ToolResult{ToolName: t.Name(), Duration: nonZeroDuration(time.Since(start))}, err
+	}
+
 	params := externalExecuteParams{
 		Name:  call.Name,
 		Input: call.Input,
@@ -190,6 +227,56 @@ func (t *ExternalPluginTool) Execute(ctx context.Context, call domain.ToolCall) 
 		Error:    payload.Error,
 		Duration: nonZeroDuration(time.Since(start)),
 	}, nil
+}
+
+func (t *ExternalPluginTool) HealthCheck(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = defaultExternalPluginHealthCheckTimeout
+	}
+
+	type healthState struct {
+		closed  bool
+		exited  bool
+		process *os.Process
+	}
+
+	stateCh := make(chan healthState, 1)
+	go func() {
+		t.stateMu.RLock()
+		closed := t.closed
+		t.stateMu.RUnlock()
+
+		t.exitMu.RLock()
+		exited := t.exited
+		t.exitMu.RUnlock()
+
+		var process *os.Process
+		if t.cmd != nil {
+			process = t.cmd.Process
+		}
+
+		stateCh <- healthState{closed: closed, exited: exited, process: process}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return t.recordHealthCheckFailure("process check timed out", timeout, context.DeadlineExceeded)
+	case state := <-stateCh:
+		if state.closed {
+			return ErrExternalPluginClosed
+		}
+		if state.process == nil {
+			return t.recordHealthCheckFailure("process is not available", timeout, nil)
+		}
+		if state.exited {
+			return t.recordHealthCheckFailure("process has exited", timeout, nil)
+		}
+		t.resetConsecutiveFailures()
+		return nil
+	}
 }
 
 func (t *ExternalPluginTool) Close() error {
@@ -355,6 +442,27 @@ func (t *ExternalPluginTool) hasExited() bool {
 	t.exitMu.RLock()
 	defer t.exitMu.RUnlock()
 	return t.exited
+}
+
+func (t *ExternalPluginTool) recordHealthCheckFailure(reason string, timeout time.Duration, cause error) error {
+	t.failureMu.Lock()
+	t.consecutiveFailures++
+	count := t.consecutiveFailures
+	t.failureMu.Unlock()
+
+	return &HealthCheckError{
+		ToolName:            t.Name(),
+		Reason:              reason,
+		Timeout:             timeout,
+		ConsecutiveFailures: count,
+		Cause:               cause,
+	}
+}
+
+func (t *ExternalPluginTool) resetConsecutiveFailures() {
+	t.failureMu.Lock()
+	t.consecutiveFailures = 0
+	t.failureMu.Unlock()
 }
 
 func (t *ExternalPluginTool) closeStdin() error {

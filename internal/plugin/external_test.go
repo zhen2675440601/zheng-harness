@@ -62,6 +62,84 @@ func TestExternalPluginExecute(t *testing.T) {
 	}
 }
 
+func TestHealthCheckPassesForRunningProcess(t *testing.T) {
+	t.Parallel()
+
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("FindProcess() error = %v", err)
+	}
+	tool := &ExternalPluginTool{
+		cmd:  &exec.Cmd{Process: process},
+		info: externalInfoResult{Name: "echo"},
+	}
+
+	if err := tool.HealthCheck(100 * time.Millisecond); err != nil {
+		t.Fatalf("HealthCheck() error = %v", err)
+	}
+	if got := tool.consecutiveFailures; got != 0 {
+		t.Fatalf("consecutiveFailures = %d, want 0", got)
+	}
+}
+
+func TestHealthCheckFailsForExitedProcess(t *testing.T) {
+	t.Parallel()
+
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("FindProcess() error = %v", err)
+	}
+	tool := &ExternalPluginTool{
+		cmd:    &exec.Cmd{Process: process},
+		info:   externalInfoResult{Name: "echo"},
+		exited: true,
+	}
+
+	err = tool.HealthCheck(100 * time.Millisecond)
+	if err == nil {
+		t.Fatal("expected HealthCheck() error")
+	}
+	var healthErr *HealthCheckError
+	if !errors.As(err, &healthErr) {
+		t.Fatalf("HealthCheck() error = %T %v, want *HealthCheckError", err, err)
+	}
+	if !strings.Contains(err.Error(), "process has exited") {
+		t.Fatalf("HealthCheck() error = %v, want exited process message", err)
+	}
+	if got := tool.consecutiveFailures; got != 1 {
+		t.Fatalf("consecutiveFailures = %d, want 1", got)
+	}
+}
+
+func TestExecuteFailsHealthCheckForExitedProcess(t *testing.T) {
+	t.Parallel()
+
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("FindProcess() error = %v", err)
+	}
+	tool := &ExternalPluginTool{
+		cmd:    &exec.Cmd{Process: process},
+		info:   externalInfoResult{Name: "echo"},
+		exited: true,
+	}
+
+	_, err = tool.Execute(context.Background(), domain.ToolCall{Name: tool.Name(), Input: "after-exit", Timeout: time.Second})
+	if err == nil {
+		t.Fatal("expected Execute() error")
+	}
+	var healthErr *HealthCheckError
+	if !errors.As(err, &healthErr) {
+		t.Fatalf("Execute() error = %T %v, want *HealthCheckError", err, err)
+	}
+	if got := tool.consecutiveFailures; got != 1 {
+		t.Fatalf("consecutiveFailures = %d, want 1", got)
+	}
+	if closeErr := tool.Close(); closeErr != nil {
+		t.Fatalf("Close() error = %v", closeErr)
+	}
+}
+
 func TestExternalPluginCrashRecovery(t *testing.T) {
 	t.Parallel()
 

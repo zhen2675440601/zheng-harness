@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -42,6 +43,7 @@ type cliApp struct {
 	newMemory    func(string) (*store.SQLiteMemoryStore, error)
 	newExecutor  func() domain.ToolExecutor
 	newPluginManager func(string) *pluginruntime.PluginManager
+	newToolPluginReloader func(string) toolPluginReloader
 	pluginExecutorFactory func(domain.ToolExecutor, pluginCLIOptions) (domain.ToolExecutor, error)
 	newModel     func() domain.Model
 	newVerifier  func(domain.ToolExecutor) domain.Verifier
@@ -113,6 +115,10 @@ type multiAgentOptions struct {
 	Aggregation string
 }
 
+type toolPluginReloader interface {
+	ReloadTool(name string) error
+}
+
 type providerMetadataResolver interface {
 	Get(id string) (pluginruntime.ProviderDescriptor, bool)
 }
@@ -178,6 +184,9 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return executor
 		},
 		newPluginManager: pluginruntime.NewManager,
+		newToolPluginReloader: func(path string) toolPluginReloader {
+			return pluginruntime.NewManager(path)
+		},
 		newModel: func() domain.Model {
 			if model := builder.NewModel(); model != nil {
 				return model
@@ -248,6 +257,12 @@ func (a cliApp) run(ctx context.Context, args []string) int {
 			return 1
 		}
 		return 0
+	case "tool":
+		if err := a.toolCommand(ctx, args[1:]); err != nil {
+			_, _ = fmt.Fprintln(a.stderr, err)
+			return 1
+		}
+		return 0
 	default:
 		a.printUsage()
 		_, _ = fmt.Fprintf(a.stderr, "unknown subcommand %q\n", args[0])
@@ -258,6 +273,60 @@ func (a cliApp) run(ctx context.Context, args []string) int {
 func isRootHelpArg(arg string) bool {
 	trimmed := strings.TrimSpace(arg)
 	return trimmed == "-h" || trimmed == "--help" || trimmed == "help"
+}
+
+func (a cliApp) toolCommand(ctx context.Context, args []string) error {
+	if len(args) == 0 || isRootHelpArg(args[0]) {
+		return errors.New("tool requires subcommand")
+	}
+
+	switch args[0] {
+	case "reload":
+		return a.toolReloadCommand(ctx, args[1:])
+	default:
+		return fmt.Errorf("unknown tool subcommand %q", args[0])
+	}
+}
+
+func (a cliApp) toolReloadCommand(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("tool reload", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+	pluginDir := fs.String("plugin-dir", "./plugins", "plugin discovery directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("tool reload requires <plugin-name>")
+	}
+
+	name := strings.TrimSpace(fs.Arg(0))
+	if name == "" {
+		return errors.New("tool reload requires <plugin-name>")
+	}
+
+	factory := a.newToolPluginReloader
+	if factory == nil {
+		factory = func(path string) toolPluginReloader {
+			if a.newPluginManager != nil {
+				return a.newPluginManager(path)
+			}
+			return pluginruntime.NewManager(path)
+		}
+	}
+	reloader := factory(*pluginDir)
+	if reloader == nil {
+		return fmt.Errorf("Failed to reload plugin %s: plugin manager is not configured", name)
+	}
+	if manager, ok := reloader.(*pluginruntime.PluginManager); ok {
+		if err := primeReloadTarget(ctx, manager, name); err != nil {
+			return fmt.Errorf("Failed to reload plugin %s: %w", name, err)
+		}
+	}
+	if err := reloader.ReloadTool(name); err != nil {
+		return fmt.Errorf("Failed to reload plugin %s: %w", name, err)
+	}
+	_, _ = fmt.Fprintf(a.stdout, "Plugin %s reloaded successfully\n", name)
+	return nil
 }
 
 func (a cliApp) runCommand(ctx context.Context, args []string) error {
@@ -582,6 +651,27 @@ func (a cliApp) inspectCommand(ctx context.Context, args []string) error {
 	return nil
 }
 
+func primeReloadTarget(ctx context.Context, manager *pluginruntime.PluginManager, name string) error {
+	if manager == nil {
+		return errors.New("plugin manager is nil")
+	}
+	if existing, ok := manager.LoadedPlugins[name]; ok && existing != nil {
+		return nil
+	}
+	plugins, err := manager.Discover()
+	if err != nil {
+		return err
+	}
+	for _, plugin := range plugins {
+		if filepath.Base(plugin.Path) != name {
+			continue
+		}
+		_, err := manager.Load(ctx, plugin.Path)
+		return err
+	}
+	return errors.New("plugin not found")
+}
+
 func (a cliApp) openRuntimeDeps(dbPath string) (*store.SQLiteSessionStore, *store.SQLiteMemoryStore, func(), error) {
 	sessionStore, err := a.newSession(dbPath)
 	if err != nil {
@@ -791,10 +881,11 @@ func (a cliApp) emitInspectResult(jsonMode bool, task domain.Task, session domai
 }
 
 func (a cliApp) printUsage() {
-	_, _ = fmt.Fprintln(a.stderr, "Usage: zheng-agent <run|resume|inspect> [flags]")
+	_, _ = fmt.Fprintln(a.stderr, "Usage: zheng-agent <run|resume|inspect|tool> [flags]")
 	_, _ = fmt.Fprintln(a.stderr, "  run --task \"task description\" [--provider <built-in-id> | --plugin-provider <plugin-id>] [--db ./agent.db] [--json] [--stream] [--decompose] [--max-workers 4] [--aggregation all-succeed]")
 	_, _ = fmt.Fprintln(a.stderr, "  resume --session <id> [--db ./agent.db] [--json] [--stream]")
 	_, _ = fmt.Fprintln(a.stderr, "  inspect --session <id> [--db ./agent.db] [--json]")
+	_, _ = fmt.Fprintln(a.stderr, "  tool reload <plugin-name> [--plugin-dir ./plugins]")
 	_, _ = fmt.Fprintln(a.stderr, "  provider ids: built-in ids use --provider; plugin-backed ids use --plugin-provider")
 	_, _ = fmt.Fprintln(a.stderr, "  --help, -h, help  Show this help")
 }

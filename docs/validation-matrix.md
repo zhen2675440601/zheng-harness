@@ -2,11 +2,12 @@
 
 **Purpose**: This document maps every required proof surface to concrete tests, replay fixtures, CLI commands, expected outcomes, and evidence targets. All validation must be agent-executable with zero human judgment.
 
-**Last Updated**: 2026-05-12  
+**Last Updated**: 2026-05-14  
 **Phase**: 4 - Closed-Loop Validation  
 **Status**: ✅ Validated - All blockers resolved  
 **v4 Status**: ✅ Validated - API server, SSE, concurrency, providers complete  
-**v7 Status**: ✅ Validated - Internal reliability hardening (service validation, session lifecycle, stream hardening, error envelopes, diagnostics, browser regression)
+**v7 Status**: ✅ Validated - Internal reliability hardening (service validation, session lifecycle, stream hardening, error envelopes, diagnostics, browser regression)  
+**v8 Status**: 🔄 In Progress - Plugin lifecycle management (hot reload, health check, auto-recovery, semantic versioning)
 
 ---
 
@@ -900,3 +901,70 @@ cd e2e && npx playwright test --project=chromium --list
 # Full suite (when Go toolchain available)
 go test ./...
 ```
+
+---
+
+## v8 Plugin Lifecycle Management 🔄 In Progress
+
+**Objective**: Add runtime reliability for Tool plugins: hot reload, health check, auto-recovery, and semantic versioning. Backward compatible — no PluginTool interface changes.
+
+### v8 Validation Surface
+
+#### 1. Hot Reload (`ReloadTool`)
+
+| Proof Surface | Command/Test | Expected Outcome | Status |
+|--------------|-------------|------------------|--------|
+| **Reload closes old plugin, loads new binary** | `go test ./internal/plugin/... -run TestReloadTool_ReloadsPlugin` | Old instance closed, new instance initialized, reload succeeds | ✅ PASS |
+| **Reload returns error for non-existent plugin** | `go test ./internal/plugin/... -run TestReloadTool_NotFound` | Error returned with "not found" message | ✅ PASS |
+
+#### 2. Pre-Call Health Check
+
+| Proof Surface | Command/Test | Expected Outcome | Status |
+|--------------|-------------|------------------|--------|
+| **Health check passes for running plugin** | `go test ./internal/plugin/... -run TestHealthCheckPassesForRunningProcess` | Tool execution proceeds normally | ✅ PASS |
+| **Health check fails for dead plugin process** | `go test ./internal/plugin/... -run TestHealthCheckFailsForExitedProcess` | HealthCheckError returned | ✅ PASS |
+
+#### 3. Auto-Recovery (Limited Retry)
+
+| Proof Surface | Command/Test | Expected Outcome | Status |
+|--------------|-------------|------------------|--------|
+| **First crash triggers one retry** | `go test ./internal/plugin/... -run TestAutoRecoveryFirstCrashRetriesOnce` | Plugin restarted once, retry attempted | ✅ PASS |
+| **Second failure marks unavailable** | `go test ./internal/plugin/... -run TestAutoRecoverySecondFailureMarksUnavailable` | Plugin marked unavailable after second consecutive crash | ✅ PASS |
+| **Successful execution resets failure count** | `go test ./internal/plugin/... -run TestAutoRecoverySuccessfulExecutionResetsFailureCount` | Failure count reset to 0 after successful execution | ✅ PASS |
+
+#### 4. Semantic Version Compatibility
+
+| Proof Surface | Command/Test | Expected Outcome | Status |
+|--------------|-------------|------------------|--------|
+| **Accepts compatible major version (1.x ↔ 1.y)** | `go test ./internal/plugin/... -run TestSemVer` | Same major version accepted | ✅ PASS |
+| **Rejects incompatible major version (2.x when expecting 1.x)** | `go test ./internal/plugin/... -run TestSemVer` | Different major version rejected | ✅ PASS |
+
+#### 5. API Endpoint `POST /api/v1/plugins/{name}/reload`
+
+| Proof Surface | Command/Test | Expected Outcome | Status |
+|--------------|-------------|------------------|--------|
+| **API reload triggers plugin reload** | `go test ./internal/server/... -run TestPluginReload` | HTTP 200 with success message | ✅ PASS |
+| **API returns 404 for non-existent plugin** | `go test ./internal/server/... -run TestPluginReload` (404 subtest) | HTTP 404 with error message | ✅ PASS |
+
+#### 6. CLI Command `tool reload <name>`
+
+| Proof Surface | Command/Test | Expected Outcome | Status |
+|--------------|-------------|------------------|--------|
+| **CLI reload triggers plugin reload** | `go test ./cmd/agent -run TestToolReload` | Plugin reloaded successfully | ✅ PASS |
+
+#### 7. Full Lifecycle Integration
+
+| Proof Surface | Command/Test | Expected Outcome | Status |
+|--------------|-------------|------------------|--------|
+| **Load → Execute → Reload → Execute again** | `go test ./internal/plugin/... -run TestFullLifecycle_Reload` | Both executions succeed | ✅ PASS |
+| **Load → Crash → Auto-recover → Execute → Success** | `go test ./internal/plugin/... -run TestFullLifecycle_Recovery` | Recovery succeeds, execution continues | ✅ PASS |
+| **Multiple plugins lifecycle coordination** | `go test ./internal/plugin/... -run TestFullLifecycle_MultiplePlugins` | Multiple plugins coexist and lifecycle independently | ✅ PASS |
+
+### v8 Coverage Summary
+
+- Happy path: ✅ Hot reload, health check, auto-recovery, semver all tested
+- Failure path: ✅ Plugin not found, dead process, crash markdown all tested
+- Recovery path: ✅ One retry on crash, reset on success, unavailable on second failure
+- API/CLI surface: ✅ Both POST endpoint and `tool reload` command tested
+- Integration: ✅ Full lifecycle scenarios with multiple plugins tested
+- Regression: ✅ Existing PluginTool interface unchanged, all existing tests pass

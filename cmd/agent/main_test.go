@@ -924,7 +924,7 @@ func TestRootHelpShowsUsage(t *testing.T) {
 			if stdout.Len() != 0 {
 				t.Fatalf("stdout = %q, want empty", stdout.String())
 			}
-			if !strings.Contains(stderr.String(), "Usage: zheng-agent <run|resume|inspect> [flags]") {
+			if !strings.Contains(stderr.String(), "Usage: zheng-agent <run|resume|inspect|tool> [flags]") {
 				t.Fatalf("stderr = %q, want usage output", stderr.String())
 			}
 			if strings.Contains(stderr.String(), "unknown subcommand") {
@@ -1139,6 +1139,65 @@ func TestAllowCommandAdditionsWork(t *testing.T) {
 	}
 }
 
+func TestToolReload(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		fake := &fakeToolPluginReloader{}
+
+		app := cliApp{
+			stdout: &stdout,
+			stderr: &stderr,
+			newToolPluginReloader: func(string) toolPluginReloader {
+				return fake
+			},
+		}
+
+		exitCode := app.run(context.Background(), []string{"tool", "reload", "demo"})
+		if exitCode != 0 {
+			t.Fatalf("exit code = %d, want 0, stderr=%s", exitCode, stderr.String())
+		}
+		if got := stdout.String(); !strings.Contains(got, "Plugin demo reloaded successfully") {
+			t.Fatalf("stdout = %q, want success message", got)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("stderr = %q, want empty", stderr.String())
+		}
+		if fake.lastName != "demo" {
+			t.Fatalf("ReloadTool() name = %q, want demo", fake.lastName)
+		}
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		t.Parallel()
+
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		app := cliApp{
+			stdout: &stdout,
+			stderr: &stderr,
+			newToolPluginReloader: func(string) toolPluginReloader {
+				return &fakeToolPluginReloader{err: errors.New("plugin not found")}
+			},
+		}
+
+		exitCode := app.run(context.Background(), []string{"tool", "reload", "missing"})
+		if exitCode != 1 {
+			t.Fatalf("exit code = %d, want 1", exitCode)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("stdout = %q, want empty", stdout.String())
+		}
+		if got := stderr.String(); !strings.Contains(got, "Failed to reload plugin missing: plugin not found") {
+			t.Fatalf("stderr = %q, want reload failure message", got)
+		}
+	})
+}
+
 func TestPluginCLI(t *testing.T) {
 	t.Parallel()
 
@@ -1244,6 +1303,16 @@ func TestPluginCLI(t *testing.T) {
 type pluginExecutorForTest struct {
 	base     domain.ToolExecutor
 	registry *tools.Registry
+}
+
+type fakeToolPluginReloader struct {
+	lastName string
+	err      error
+}
+
+func (f *fakeToolPluginReloader) ReloadTool(name string) error {
+	f.lastName = name
+	return f.err
 }
 
 func (e pluginExecutorForTest) Execute(ctx context.Context, call domain.ToolCall) (domain.ToolResult, error) {

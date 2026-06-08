@@ -6,9 +6,10 @@
 
 ## 当前进度
 
-**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成 | v6 ✅ 完成 | v7 ✅ 完成**
+**Phase 1 ✅ 完成 | Phase 2 ✅ 完成 | Phase 3 ✅ 完成 | Phase 4 ✅ 完成 | v2 ✅ 完成 | v3 ✅ 完成 | v4 ✅ 完成 | v5 ✅ 完成 | v6 ✅ 完成 | v7 ✅ 完成 | v8 🔄 进行中**
 
-**已完成**: T1-T11 (11/11 核心任务) + Phase 3 T1-T12 + Phase 4 闭环验证 + v1/v2/v3/v4/v5/v6/v7 发布准备
+**已完成**: T1-T11 (11/11 核心任务) + Phase 3 T1-T12 + Phase 4 闭环验证 + v1/v2/v3/v4/v5/v6/v7 发布准备  
+**v8**: 插件生命周期管理 — 热重载、健康检查、自动恢复、语义版本 — 🔄 进行中
 
 验证状态权威来源：[`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
@@ -254,6 +255,37 @@ go test ./internal/store/...     # 持久化层稳定性
 - Playwright 完整运行 — 被预存在 harness drift 阻塞
 
 **v7 验证状态**: 所有 7 个任务的可靠性测试已通过。服务层校验、会话生命周期硬化、SSE 错误路径保护、统一 API 错误包络、运行时诊断、浏览器回归清单全部验证。详见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
+
+---
+
+## v8 🔄 进行中
+
+**v8 插件生命周期管理** 聚焦 Tool 插件的运行时可靠性提升，不涉及 Provider/Verifier/AgentStrategy 插件家族变更。
+
+### 新增能力
+
+- **热重载**: `PluginManager.ReloadTool(name)` 关闭现有插件实例，重新发现并加载插件二进制，重新执行 JSON-RPC 握手
+- **调用前健康检查**: `ExternalPluginTool.Execute()` 执行前检查插件进程存活状态，使用可配置超时（默认 5s）
+- **自动恢复**: 插件崩溃后自动重启一次，连续第二次失败后标记为不可用，成功执行重置失败计数
+- **语义版本兼容性**: 首次加载时验证主版本一致性（如 1.x 兼容 1.y，拒绝 2.x 当期望 1.x）
+
+### API 与 CLI
+
+- **API**: `POST /api/v1/plugins/:name/reload` — 触发 Tool 插件热重载，成功返回 200，插件不存在返回 404
+- **CLI**: `tool reload <plugin-name> [--plugin-dir ./plugins]` — 命令行触发插件重载
+
+### v8 验证状态
+
+**v8 验证命令**:
+```bash
+go test ./internal/plugin/... -run "TestReloadTool|TestHealthCheck"
+go test ./internal/plugin/... -run "TestAutoRecovery"
+go test ./internal/plugin/... -run "TestFullLifecycle"
+go test ./internal/server/... -run TestPluginReload
+go test ./cmd/agent -run TestToolReload
+```
+
+**验证状态**: 硬重载测试通过，健康检查测试通过，自动恢复测试通过，语义版本测试通过，API 端点测试通过，CLI 命令测试通过。详见 [`docs/validation-matrix.md`](docs/validation-matrix.md)。
 
 ---
 

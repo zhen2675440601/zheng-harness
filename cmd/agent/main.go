@@ -6,5 +6,9 @@ import (
 )
 
 func main() {
-	os.Exit(runCLI(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(runMain(context.Background(), os.Args[1:]))
+}
+
+func runMain(ctx context.Context, args []string) int {
+	return runCLI(ctx, args, os.Stdout, os.Stderr)
 }

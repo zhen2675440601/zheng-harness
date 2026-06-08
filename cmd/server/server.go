@@ -198,6 +198,7 @@ sessionStore, memoryStore, userStore, cleanup, err := a.openRuntimeDeps(*dbPath,
 		Builder:      a.builder,
 		Config:       apiConfig,
 		JWTSecret:    resolvedSecret,
+		ToolPluginReloader: pluginruntime.NewManager("./plugins"),
 	}
 	router := a.newRouter()
 	registerRoutes(router, api)
@@ -251,7 +252,7 @@ func registerRoutesWithWebFS(router chi.Router, api *serverapi.API, webAssets fs
 		if secret != "" {
 			now := time.Now()
 			hdr := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-			payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"sub":"dev","iat":%d,"exp":%d}`, now.Unix(), now.Add(8*time.Hour).Unix())))
+			payload := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"sub":"dev","iat":%d,"exp":%d}`, now.Unix(), now.Add(8*time.Hour).Unix()))
 			mac := hmac.New(sha256.New, []byte(secret))
 			_, _ = mac.Write([]byte(hdr + "." + payload))
 			token = hdr + "." + payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -268,6 +269,7 @@ func registerRoutesWithWebFS(router chi.Router, api *serverapi.API, webAssets fs
 		r.Post("/chat/{conversation_id}/reply", api.JSON(api.HandleChatReply))
 		r.Get("/chat/{conversation_id}/transcript", api.JSON(api.HandleChatTranscript))
 		r.Get("/chat/conversations", api.JSON(api.HandleChatList))
+		r.Post("/plugins/{name}/reload", api.JSON(api.HandlePluginReload))
 		r.Get("/sessions", api.JSON(api.HandleListSessions))
 		r.Get("/sessions/{id}/inspect", api.JSON(api.HandleInspect))
 		r.Get("/sessions/{id}/stream", api.JSON(api.HandleStream))
